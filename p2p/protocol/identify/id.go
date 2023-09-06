@@ -996,7 +996,7 @@ func filterAddrs(addrs []ma.Multiaddr, remote ma.Multiaddr) []ma.Multiaddr {
 		return addrs
 	}
 	if manet.IsPrivateAddr(remote) {
-		return ma.FilterAddrs(addrs, func(a ma.Multiaddr) bool { return !manet.IsThinWaist(a) || !manet.IsIPLoopback(a) })
+		return ma.FilterAddrs(addrs, func(a ma.Multiaddr) bool { return !manet.IsIPLoopback(a) })
 	}
 	return ma.FilterAddrs(addrs, func(a ma.Multiaddr) bool { return !manet.IsThinWaist(a) || manet.IsPublicAddr(a) })
 }
