@@ -301,27 +301,8 @@ func (s *Swarm) addrsForDial(ctx context.Context, p peer.ID) (goodAddrs []ma.Mul
 		return nil, nil, ErrNoAddresses
 	}
 
-	peerAddrsAfterTransportResolved := make([]ma.Multiaddr, 0, len(peerAddrs))
-	for _, a := range peerAddrs {
-		tpt := s.TransportForDialing(a)
-		resolver, ok := tpt.(transport.Resolver)
-		if ok {
-			resolvedAddrs, err := resolver.Resolve(ctx, a)
-			if err != nil {
-				log.Warnf("Failed to resolve multiaddr %s by transport %v: %v", a, tpt, err)
-				continue
-			}
-			peerAddrsAfterTransportResolved = append(peerAddrsAfterTransportResolved, resolvedAddrs...)
-		} else {
-			peerAddrsAfterTransportResolved = append(peerAddrsAfterTransportResolved, a)
-		}
-	}
-
 	// Resolve dns or dnsaddrs
-	resolved, err := s.resolveAddrs(ctx, peer.AddrInfo{
-		ID:    p,
-		Addrs: peerAddrsAfterTransportResolved,
-	})
+	resolved, err := s.resolveAddrs(ctx, peer.AddrInfo{ID: p, Addrs: peerAddrs})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -342,21 +323,19 @@ func (s *Swarm) addrsForDial(ctx context.Context, p peer.ID) (goodAddrs []ma.Mul
 }
 
 func (s *Swarm) resolveAddrs(ctx context.Context, pi peer.AddrInfo) ([]ma.Multiaddr, error) {
-	proto := ma.ProtocolWithCode(ma.P_P2P).Name
-	p2paddr, err := ma.NewMultiaddr("/" + proto + "/" + pi.ID.Pretty())
+	p2paddr, err := ma.NewMultiaddr("/" + ma.ProtocolWithCode(ma.P_P2P).Name + "/" + pi.ID.String())
 	if err != nil {
 		return nil, err
 	}
 
-	resolveSteps := 0
-
+	var resolveSteps int
 	// Recursively resolve all addrs.
 	//
 	// While the toResolve list is non-empty:
 	// * Pop an address off.
 	// * If the address is fully resolved, add it to the resolved list.
 	// * Otherwise, resolve it and add the results to the "to resolve" list.
-	toResolve := append(([]ma.Multiaddr)(nil), pi.Addrs...)
+	toResolve := append([]ma.Multiaddr{}, pi.Addrs...)
 	resolved := make([]ma.Multiaddr, 0, len(pi.Addrs))
 	for len(toResolve) > 0 {
 		// pop the last addr off.
@@ -381,6 +360,26 @@ func (s *Swarm) resolveAddrs(ctx context.Context, pi peer.AddrInfo) ([]ma.Multia
 				maxAddressResolution,
 			)
 			continue
+		}
+
+		tpt := s.TransportForDialing(addr)
+		resolver, ok := tpt.(transport.Resolver)
+		if ok {
+			resolvedAddrs, err := resolver.Resolve(ctx, addr)
+			if err != nil {
+				log.Warnf("Failed to resolve multiaddr %s by transport %v: %v", addr, tpt, err)
+				continue
+			}
+			var added bool
+			for _, a := range resolvedAddrs {
+				if !addr.Equal(a) {
+					toResolve = append(toResolve, a)
+					added = true
+				}
+			}
+			if added {
+				continue
+			}
 		}
 
 		// otherwise, resolve it
