@@ -47,8 +47,8 @@ func NewConnManager(statelessResetKey quic.StatelessResetKey, opts ...Option) (*
 
 	quicConf := quicConfig.Clone()
 
-	quicConf.Tracer = func(ctx context.Context, p quiclogging.Perspective, ci quic.ConnectionID) quiclogging.ConnectionTracer {
-		var tracer quiclogging.ConnectionTracer
+	quicConf.Tracer = func(ctx context.Context, p quiclogging.Perspective, ci quic.ConnectionID) *quiclogging.ConnectionTracer {
+		var tracer *quiclogging.ConnectionTracer
 		if qlogTracerDir != "" {
 			tracer = qloggerForDir(qlogTracerDir, p, ci)
 		}
