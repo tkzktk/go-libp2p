@@ -25,7 +25,8 @@ type ConnManager struct {
 	quicListenersMu sync.Mutex
 	quicListeners   map[string]quicListenerEntry
 
-	srk quic.StatelessResetKey
+	srk      quic.StatelessResetKey
+	tokenKey quic.TokenGeneratorKey
 }
 
 type quicListenerEntry struct {
@@ -33,11 +34,12 @@ type quicListenerEntry struct {
 	ln       *quicListener
 }
 
-func NewConnManager(statelessResetKey quic.StatelessResetKey, opts ...Option) (*ConnManager, error) {
+func NewConnManager(statelessResetKey quic.StatelessResetKey, tokenKey quic.TokenGeneratorKey, opts ...Option) (*ConnManager, error) {
 	cm := &ConnManager{
 		enableReuseport: true,
 		quicListeners:   make(map[string]quicListenerEntry),
 		srk:             statelessResetKey,
+		tokenKey:        tokenKey,
 	}
 	for _, o := range opts {
 		if err := o(cm); err != nil {

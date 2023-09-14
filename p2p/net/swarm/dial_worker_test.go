@@ -26,12 +26,13 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/host/peerstore/pstoremem"
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	tptu "github.com/libp2p/go-libp2p/p2p/net/upgrader"
-	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	"github.com/libp2p/go-libp2p/p2p/transport/quicreuse"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -88,11 +89,11 @@ func makeSwarmWithNoListenAddrs(t *testing.T, opts ...Option) *Swarm {
 	if err := s.AddTransport(tcpTransport); err != nil {
 		t.Fatal(err)
 	}
-	reuse, err := quicreuse.NewConnManager([32]byte{})
+	reuse, err := quicreuse.NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	quicTransport, err := quic.NewTransport(priv, reuse, nil, nil, nil)
+	quicTransport, err := libp2pquic.NewTransport(priv, reuse, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -968,7 +969,7 @@ func TestDialWorkerLoopHolePunching(t *testing.T) {
 		for i := 0; i < len(addrs); i++ {
 			delay := 10 * time.Second
 			if addrs[i].Equal(t1) {
-				//fire t1 immediately
+				// fire t1 immediately
 				delay = 0
 			} else if addrs[i].Equal(t2) {
 				// delay t2 by 100ms

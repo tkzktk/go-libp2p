@@ -261,6 +261,7 @@ func (cfg *Config) addTransports(h host.Host) error {
 	}
 
 	fxopts = append(fxopts, fx.Provide(PrivKeyToStatelessResetKey))
+	fxopts = append(fxopts, fx.Provide(PrivKeyToTokenGeneratorKey))
 	if cfg.QUICReuse != nil {
 		fxopts = append(fxopts, cfg.QUICReuse...)
 	} else {

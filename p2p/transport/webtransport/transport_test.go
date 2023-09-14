@@ -97,7 +97,7 @@ func getCerthashComponent(t *testing.T, b []byte) ma.Multiaddr {
 
 func newConnManager(t *testing.T, opts ...quicreuse.Option) *quicreuse.ConnManager {
 	t.Helper()
-	cm, err := quicreuse.NewConnManager([32]byte{}, opts...)
+	cm, err := quicreuse.NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{}, opts...)
 	require.NoError(t, err)
 	t.Cleanup(func() { cm.Close() })
 	return cm

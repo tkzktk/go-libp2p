@@ -8,13 +8,13 @@ import (
 	"log"
 	"os"
 
-	"github.com/libp2p/go-libp2p/p2p/transport/quicreuse"
-
 	ic "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	"github.com/libp2p/go-libp2p/p2p/transport/quicreuse"
 
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/quic-go/quic-go"
 )
 
 func main() {
@@ -41,7 +41,7 @@ func run(raddr string, p string) error {
 		return err
 	}
 
-	reuse, err := quicreuse.NewConnManager([32]byte{})
+	reuse, err := quicreuse.NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{})
 	if err != nil {
 		return err
 	}

@@ -69,7 +69,7 @@ func runServer(t *testing.T, tr tpt.Transport, addr string) tpt.Listener {
 
 func newConnManager(t *testing.T, opts ...quicreuse.Option) *quicreuse.ConnManager {
 	t.Helper()
-	cm, err := quicreuse.NewConnManager([32]byte{}, opts...)
+	cm, err := quicreuse.NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{}, opts...)
 	require.NoError(t, err)
 	t.Cleanup(func() { cm.Close() })
 	return cm

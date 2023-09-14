@@ -54,7 +54,7 @@ func testListenOnSameProto(t *testing.T, enableReuseport bool) {
 	if !enableReuseport {
 		opts = append(opts, DisableReuseport())
 	}
-	cm, err := NewConnManager([32]byte{}, opts...)
+	cm, err := NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{}, opts...)
 	require.NoError(t, err)
 	defer checkClosed(t, cm)
 	defer cm.Close()
@@ -83,7 +83,7 @@ func TestConnectionPassedToQUICForListening(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows. Windows doesn't support these optimizations")
 	}
-	cm, err := NewConnManager([32]byte{}, DisableReuseport())
+	cm, err := NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{}, DisableReuseport())
 	require.NoError(t, err)
 	defer cm.Close()
 
@@ -107,7 +107,7 @@ func TestConnectionPassedToQUICForListening(t *testing.T) {
 func TestAcceptErrorGetCleanedUp(t *testing.T) {
 	raddr := ma.StringCast("/ip4/127.0.0.1/udp/0/quic-v1")
 
-	cm, err := NewConnManager([32]byte{}, DisableReuseport())
+	cm, err := NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{}, DisableReuseport())
 	require.NoError(t, err)
 	defer cm.Close()
 
@@ -143,7 +143,7 @@ func TestConnectionPassedToQUICForDialing(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows. Windows doesn't support these optimizations")
 	}
-	cm, err := NewConnManager([32]byte{}, DisableReuseport())
+	cm, err := NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{}, DisableReuseport())
 	require.NoError(t, err)
 	defer cm.Close()
 
@@ -218,7 +218,7 @@ func testListener(t *testing.T, enableReuseport bool) {
 	if !enableReuseport {
 		opts = append(opts, DisableReuseport())
 	}
-	cm, err := NewConnManager([32]byte{}, opts...)
+	cm, err := NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{}, opts...)
 	require.NoError(t, err)
 
 	id1, tlsConf1 := getTLSConfForProto(t, "proto1")

@@ -21,11 +21,12 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	tptu "github.com/libp2p/go-libp2p/p2p/net/upgrader"
-	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	"github.com/libp2p/go-libp2p/p2p/transport/quicreuse"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -175,11 +176,11 @@ func GenSwarm(t *testing.T, opts ...Option) *swarm.Swarm {
 		}
 	}
 	if !cfg.disableQUIC {
-		reuse, err := quicreuse.NewConnManager([32]byte{})
+		reuse, err := quicreuse.NewConnManager(quic.StatelessResetKey{}, quic.TokenGeneratorKey{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		quicTransport, err := quic.NewTransport(priv, reuse, nil, cfg.connectionGater, nil)
+		quicTransport, err := libp2pquic.NewTransport(priv, reuse, nil, cfg.connectionGater, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
