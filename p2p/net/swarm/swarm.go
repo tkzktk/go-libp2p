@@ -398,17 +398,17 @@ func (s *Swarm) addConn(tc transport.CapableConn, dir network.Direction) (*Conn,
 	s.conns.Unlock()
 
 	// Notify goroutines waiting for a direct connection
-
-	// Go routines interested in waiting for direct connection first acquire this lock and then
-	// acquire conns.RLock. Do not acquire this lock before conns.Unlock to prevent deadlock.
-	s.directConnNotifs.Lock()
 	if !c.Stat().Transient {
+		// Go routines interested in waiting for direct connection first acquire this lock
+		// and then acquire s.conns.RLock. Do not acquire this lock before conns.Unlock to
+		// prevent deadlock.
+		s.directConnNotifs.Lock()
 		for _, ch := range s.directConnNotifs.m[p] {
 			close(ch)
 		}
 		delete(s.directConnNotifs.m, p)
+		s.directConnNotifs.Unlock()
 	}
-	s.directConnNotifs.Unlock()
 
 	// Emit event after releasing `s.conns` lock so that a consumer can still
 	// use swarm methods that need the `s.conns` lock.
@@ -466,15 +466,15 @@ func (s *Swarm) NewStream(ctx context.Context, p peer.ID) (network.Stream, error
 	//
 	// TODO: Try all connections even if we get an error opening a stream on
 	// a non-closed connection.
-	dialed := false
-	for i := 0; i < 1; i++ {
+	numDials := 0
+	for {
 		c := s.bestConnToPeer(p)
 		if c == nil {
 			if nodial, _ := network.GetNoDial(ctx); !nodial {
-				if dialed {
+				numDials++
+				if numDials > DialAttempts {
 					return nil, errors.New("max dial attempts exceeded")
 				}
-				dialed = true
 				var err error
 				c, err = s.dialPeer(ctx, p)
 				if err != nil {
@@ -503,7 +503,6 @@ func (s *Swarm) NewStream(ctx context.Context, p peer.ID) (network.Stream, error
 		}
 		return str, nil
 	}
-	return nil, network.ErrNoConn
 }
 
 // waitForDirectConn waits for a direct connection established through hole punching or connection reversal.
@@ -524,14 +523,17 @@ func (s *Swarm) waitForDirectConn(ctx context.Context, p peer.ID) (*Conn, error)
 	s.directConnNotifs.m[p] = append(s.directConnNotifs.m[p], ch)
 	s.directConnNotifs.Unlock()
 
-	// Wait for notification.
-	// There's no point waiting for more than a minute here.
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	// apply the DialPeer timeout
+	ctx, cancel := context.WithTimeout(ctx, network.GetDialPeerTimeout(ctx))
 	defer cancel()
+
+	// Wait for notification.
 	select {
 	case <-ctx.Done():
 		// Remove ourselves from the notification list
 		s.directConnNotifs.Lock()
+		defer s.directConnNotifs.Unlock()
+
 		s.directConnNotifs.m[p] = slices.DeleteFunc(
 			s.directConnNotifs.m[p],
 			func(c chan struct{}) bool { return c == ch },
@@ -539,15 +541,15 @@ func (s *Swarm) waitForDirectConn(ctx context.Context, p peer.ID) (*Conn, error)
 		if len(s.directConnNotifs.m[p]) == 0 {
 			delete(s.directConnNotifs.m, p)
 		}
-		s.directConnNotifs.Unlock()
 		return nil, ctx.Err()
 	case <-ch:
 		// We do not need to remove ourselves from the list here as the notifier
-		// clears the map
+		// clears the map entry
 		c := s.bestConnToPeer(p)
 		if c == nil {
 			return nil, network.ErrNoConn
-		} else if c.Stat().Transient {
+		}
+		if c.Stat().Transient {
 			return nil, network.ErrTransientConn
 		}
 		return c, nil
