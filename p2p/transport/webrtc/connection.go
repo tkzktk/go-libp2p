@@ -44,7 +44,7 @@ type dataChannel struct {
 
 type connection struct {
 	pc        *webrtc.PeerConnection
-	transport *WebRTCTransport
+	transport tpt.Transport
 	scope     network.ConnManagementScope
 
 	closeErr error
@@ -66,10 +66,11 @@ type connection struct {
 	cancel context.CancelFunc
 }
 
-func newConnection(
+// NewWebRTCConnection creates a transport.CapableConn from a webrtc.PeerConnection
+func NewWebRTCConnection(
 	direction network.Direction,
 	pc *webrtc.PeerConnection,
-	transport *WebRTCTransport,
+	transport tpt.Transport,
 	scope network.ConnManagementScope,
 
 	localPeer peer.ID,
