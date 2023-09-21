@@ -18,10 +18,10 @@ import (
 )
 
 type listener struct {
-	t            *transport
-	webrtcConfig webrtc.Configuration
-	conns        chan tpt.CapableConn
-	closeC       chan struct{}
+	transport     *transport
+	connQueue     chan tpt.CapableConn
+	closeC        chan struct{}
+	inflightQueue chan struct{}
 }
 
 var _ tpt.Listener = &listener{}
@@ -41,7 +41,7 @@ func (n NetAddr) String() string {
 // Accept implements transport.Listener.
 func (l *listener) Accept() (tpt.CapableConn, error) {
 	select {
-	case c := <-l.conns:
+	case c := <-l.connQueue:
 		return c, nil
 	case <-l.closeC:
 		return nil, tpt.ErrListenerClosed
@@ -55,7 +55,7 @@ func (l *listener) Addr() net.Addr {
 
 // Close implements transport.Listener.
 func (l *listener) Close() error {
-	l.t.RemoveListener(l)
+	l.transport.RemoveListener(l)
 	close(l.closeC)
 	return nil
 }
@@ -66,22 +66,28 @@ func (*listener) Multiaddr() ma.Multiaddr {
 }
 
 func (l *listener) handleIncoming(s network.Stream) {
-	ctx, cancel := context.WithTimeout(context.Background(), streamTimeout)
+	select {
+	case l.inflightQueue <- struct{}{}:
+		defer func() { <-l.inflightQueue }()
+	case <-l.closeC:
+		s.Reset()
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
 	defer s.Close()
-	s.SetDeadline(time.Now().Add(streamTimeout))
 
-	scope, err := l.t.rcmgr.OpenConnection(network.DirInbound, false, ma.StringCast("/webrtc"))
+	s.SetDeadline(time.Now().Add(connectTimeout))
+
+	scope, err := l.transport.rcmgr.OpenConnection(network.DirInbound, false, ma.StringCast("/webrtc"))
 	if err != nil {
 		s.Reset()
 		log.Debug("failed to create connection scope:", err)
 		return
 	}
 
-	settings := webrtc.SettingEngine{}
-	settings.DetachDataChannels()
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
-	pc, err := api.NewPeerConnection(l.webrtcConfig)
+	pc, err := l.transport.NewPeerConnection()
 	if err != nil {
 		s.Reset()
 		log.Debug("error creating a webrtc.PeerConnection:", err)
@@ -209,7 +215,7 @@ func (l *listener) handleIncoming(s network.Stream) {
 				readErr <- fmt.Errorf("invalid message: msg.Type expected %s got %s", pb.Message_ICE_CANDIDATE, msg.Type)
 				return
 			}
-			// Ignore without erroring on empty message.
+			// Ignore without Debuging on empty message.
 			// Pion has a case where OnCandidate callback may be called with a nil
 			// candidate
 			if msg.Data == nil || *msg.Data == "" {
@@ -233,42 +239,45 @@ func (l *listener) handleIncoming(s network.Stream) {
 	case <-ctx.Done():
 		pc.Close()
 		s.Reset()
-		log.Error(ctx.Err())
+		log.Debug(ctx.Err())
 		return
 	case err := <-writeErr:
 		pc.Close()
 		s.Reset()
-		log.Error(err)
+		log.Debug(err)
 		return
 	case err := <-readErr:
 		pc.Close()
 		s.Reset()
-		log.Error(err)
+		log.Debug(err)
 		return
 	case state := <-connectionState:
 		switch state {
 		default:
 			pc.Close()
 			s.Reset()
+			log.Debugf("connection setup failed, got state: %s", state)
 			return
 		case webrtc.PeerConnectionStateConnected:
 			conn, _ := libp2pwebrtc.NewWebRTCConnection(
 				network.DirInbound,
 				pc,
-				l.t,
+				l.transport,
 				scope,
-				l.t.host.ID(),
+				l.transport.host.ID(),
 				ma.StringCast("/webrtc"),
 				s.Conn().RemotePeer(),
-				l.t.host.Peerstore().PubKey(s.Conn().RemotePeer()),
+				l.transport.host.Peerstore().PubKey(s.Conn().RemotePeer()),
 				ma.StringCast("/webrtc"),
 			)
+			// Close the stream before we wait for the connection to be accepted
+			s.Close()
 			select {
-			case l.conns <- conn:
-			default:
+			case l.connQueue <- conn:
+			case <-l.closeC:
 				s.Reset()
-				log.Debug("incoming conn queue full: dropping conn from %s", s.Conn().RemotePeer())
 				conn.Close()
+				log.Debug("listener closed: dropping conn from %s", s.Conn().RemotePeer())
 			}
 			return
 		}

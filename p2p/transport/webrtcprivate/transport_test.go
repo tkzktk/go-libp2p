@@ -3,7 +3,9 @@ package libp2pwebrtcprivate
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,7 +56,9 @@ func newWebRTCHost(t *testing.T) *webrtcHost {
 
 func newRelayedHost(t *testing.T) *relayedHost {
 	rh := blankhost.NewBlankHost(swarmt.GenSwarm(t))
-	_, err := relay.New(rh)
+	rr := relay.DefaultResources()
+	rr.MaxCircuits = 100
+	_, err := relay.New(rh, relay.WithResources(rr))
 	require.NoError(t, err)
 
 	ps := swarmt.GenSwarm(t)
@@ -100,6 +104,9 @@ func TestSingleDial(t *testing.T) {
 	n, err := sb.Read(recv)
 	require.NoError(t, err)
 	require.Equal(t, "hello world", string(recv[:n]))
+
+	ca.Close()
+	cb.Close()
 }
 
 func TestMultipleDials(t *testing.T) {
@@ -113,25 +120,39 @@ func TestMultipleDials(t *testing.T) {
 			defer b.Close()
 
 			l, err := b.T.Listen(ma.StringCast("/webrtc"))
-			assert.NoError(t, err)
+			if !assert.NoError(t, err) {
+				return
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			ca, err := a.T.Dial(ctx, b.Addr, b.ID())
-			assert.NoError(t, err)
+			if !assert.NoError(t, err) {
+				return
+			}
 
 			cb, err := l.Accept()
-			assert.NoError(t, err)
+			if !assert.NoError(t, err) {
+				return
+			}
 
 			sa, err := ca.OpenStream(ctx)
-			assert.NoError(t, err)
+			if !assert.NoError(t, err) {
+				return
+			}
 			sb, err := cb.AcceptStream()
-			assert.NoError(t, err)
+			if !assert.NoError(t, err) {
+				return
+			}
 			sa.Write([]byte("hello world"))
 			recv := make([]byte, 24)
 			n, err := sb.Read(recv)
-			assert.NoError(t, err)
-			assert.Equal(t, "hello world", string(recv[:n]))
+			if !assert.NoError(t, err) {
+				return
+			}
+			if !assert.Equal(t, "hello world", string(recv[:n])) {
+				return
+			}
 			wg.Done()
 		}()
 	}
@@ -139,42 +160,368 @@ func TestMultipleDials(t *testing.T) {
 }
 
 func TestMultipleDialsAndListeners(t *testing.T) {
-	var hosts []*webrtcHost
-	for i := 0; i < 5; i++ {
-		hosts = append(hosts, newWebRTCHost(t))
+	var dialHosts []*webrtcHost
+	const N = 5
+	for i := 0; i < N; i++ {
+		dialHosts = append(dialHosts, newWebRTCHost(t))
+		defer dialHosts[i].Close()
+	}
+
+	var listenHosts []*relayedHost
+	for i := 0; i < N; i++ {
+		listenHosts = append(listenHosts, newRelayedHost(t))
+		l, err := listenHosts[i].T.Listen(ma.StringCast("/webrtc"))
+		require.NoError(t, err)
+		defer listenHosts[i].Close()
+		defer l.Close()
 	}
 	var wg sync.WaitGroup
 
-	for i := 0; i < 5; i++ {
-		for j := 0; j < 5; j++ {
+	dialAndPing := func(h *webrtcHost, raddr ma.Multiaddr, p peer.ID) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		ca, err := h.T.Dial(ctx, raddr, p)
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer ca.Close()
+		sa, err := ca.OpenStream(ctx)
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer sa.Close()
+		sa.Write([]byte("hello world"))
+		recv := make([]byte, 24)
+		n, err := sa.Read(recv)
+		if !assert.NoError(t, err) {
+			return
+		}
+		if !assert.Equal(t, "hello world", string(recv[:n])) {
+			return
+		}
+	}
+
+	acceptAndPong := func(r *relayedHost) {
+		cb, err := r.T.listener.Accept()
+		if !assert.NoError(t, err) {
+			return
+		}
+
+		sb, err := cb.AcceptStream()
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer sb.Close()
+
+		recv := make([]byte, 24)
+		n, err := sb.Read(recv)
+		if !assert.NoError(t, err) {
+			return
+		}
+		if !assert.Equal(t, "hello world", string(recv[:n])) {
+			return
+		}
+		sb.Write(recv[:n])
+	}
+
+	for i := 0; i < N; i++ {
+		for j := 0; j < N; j++ {
 			wg.Add(1)
-			go func(j int) {
-				b := newRelayedHost(t)
-				defer b.Close()
-
-				l, err := b.T.Listen(ma.StringCast("/webrtc"))
-				assert.NoError(t, err)
-
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				ca, err := hosts[j].T.Dial(ctx, b.Addr, b.ID())
-				assert.NoError(t, err)
-
-				cb, err := l.Accept()
-				assert.NoError(t, err)
-
-				sa, err := ca.OpenStream(ctx)
-				assert.NoError(t, err)
-				sb, err := cb.AcceptStream()
-				assert.NoError(t, err)
-				sa.Write([]byte("hello world"))
-				recv := make([]byte, 24)
-				n, err := sb.Read(recv)
-				assert.NoError(t, err)
-				assert.Equal(t, "hello world", string(recv[:n]))
+			go func(i, j int) {
+				go dialAndPing(dialHosts[i], listenHosts[j].Addr, listenHosts[j].ID())
+				acceptAndPong(listenHosts[j])
 				wg.Done()
-			}(j)
+			}(i, j)
 		}
 	}
 	wg.Wait()
+}
+
+func TestDialerCanCreateStreams(t *testing.T) {
+	a := newWebRTCHost(t)
+	b := newRelayedHost(t)
+	listener, err := b.T.Listen(ma.StringCast("/webrtc"))
+	require.NoError(t, err)
+
+	aC := make(chan bool)
+	go func() {
+		defer close(aC)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		conn, err := a.T.Dial(ctx, b.Addr, b.ID())
+		if !assert.NoError(t, err) {
+			return
+		}
+		s, err := conn.AcceptStream()
+		if !assert.NoError(t, err) {
+			return
+		}
+		recv := make([]byte, 24)
+		n, err := s.Read(recv)
+		if !assert.NoError(t, err) {
+			return
+		}
+		_, err = s.Write(recv[:n])
+		if !assert.NoError(t, err) {
+			return
+		}
+		s.Close()
+	}()
+
+	bC := make(chan bool)
+	go func() {
+		defer close(bC)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		conn, err := listener.Accept()
+		if !assert.NoError(t, err) {
+			return
+		}
+		s, err := conn.OpenStream(ctx)
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer s.Close()
+
+		_, err = s.Write([]byte("hello world"))
+		if !assert.NoError(t, err) {
+			return
+		}
+
+		recv := make([]byte, 24)
+		n, err := s.Read(recv)
+		if !assert.NoError(t, err) {
+			return
+		}
+		if !assert.Equal(t, "hello world", string(recv[:n])) {
+			return
+		}
+	}()
+
+	select {
+	case <-aC:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout")
+	}
+	select {
+	case <-bC:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestDialerCanCreateStreamsMultiple(t *testing.T) {
+	count := 5
+	a := newWebRTCHost(t)
+	b := newRelayedHost(t)
+	listener, err := b.T.Listen(WebRTCAddr)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		lconn, err := listener.Accept()
+		if !assert.NoError(t, err) {
+			return
+		}
+		if !assert.Equal(t, a.ID(), lconn.RemotePeer()) {
+			return
+		}
+		var wg sync.WaitGroup
+
+		for i := 0; i < count; i++ {
+			stream, err := lconn.AcceptStream()
+			if !assert.NoError(t, err) {
+				return
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				buf := make([]byte, 100)
+				n, err := stream.Read(buf)
+				if !assert.NoError(t, err) {
+					return
+				}
+				if !assert.Equal(t, "test", string(buf[:n])) {
+					return
+				}
+				_, err = stream.Write([]byte("test"))
+				if !assert.NoError(t, err) {
+					return
+				}
+			}()
+		}
+
+		wg.Wait()
+		done <- struct{}{}
+	}()
+
+	conn, err := a.T.Dial(context.Background(), b.Addr, b.ID())
+	require.NoError(t, err)
+
+	for i := 0; i < count; i++ {
+		idx := i
+		go func() {
+			stream, err := conn.OpenStream(context.Background())
+			if !assert.NoError(t, err) {
+				return
+			}
+			t.Logf("dialer opened stream: %d", idx)
+			buf := make([]byte, 100)
+			_, err = stream.Write([]byte("test"))
+			if !assert.NoError(t, err) {
+				return
+			}
+			n, err := stream.Read(buf)
+			if !assert.NoError(t, err) {
+				return
+			}
+			if !assert.Equal(t, "test", string(buf[:n])) {
+				return
+			}
+		}()
+	}
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out")
+	}
+}
+
+func TestMaxInflightQueue(t *testing.T) {
+	b := newRelayedHost(t)
+	defer b.Close()
+	count := 3
+	b.T.maxInFlightConnections = count
+	listener, err := b.T.Listen(WebRTCAddr)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	var success, failure atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < count+1; i++ {
+		wg.Add(1)
+		go func() {
+			a := newWebRTCHost(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := a.T.Dial(ctx, b.Addr, b.ID())
+			if err == nil {
+				success.Add(1)
+			} else {
+				failure.Add(1)
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, 1, int(failure.Load()))
+	require.Equal(t, count, int(success.Load()))
+}
+
+func TestRemoteReadsAfterClose(t *testing.T) {
+	b := newRelayedHost(t)
+	listener, err := b.T.Listen(WebRTCAddr)
+	require.NoError(t, err)
+
+	a := newWebRTCHost(t)
+
+	done := make(chan error)
+	go func() {
+		lconn, err := listener.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		stream, err := lconn.AcceptStream()
+		if err != nil {
+			done <- err
+			return
+		}
+		_, err = stream.Write([]byte{1, 2, 3, 4})
+		if err != nil {
+			done <- err
+			return
+		}
+		err = stream.Close()
+		if err != nil {
+			done <- err
+			return
+		}
+		close(done)
+	}()
+
+	conn, err := a.T.Dial(context.Background(), b.Addr, b.ID())
+	require.NoError(t, err)
+	// create a stream
+	stream, err := conn.OpenStream(context.Background())
+
+	require.NoError(t, err)
+	// require write and close to complete
+	require.NoError(t, <-done)
+
+	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	buf := make([]byte, 10)
+	n, err := stream.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, n, 4)
+}
+
+func TestStreamDeadline(t *testing.T) {
+	b := newRelayedHost(t)
+	listener, err := b.T.Listen(WebRTCAddr)
+	require.NoError(t, err)
+	a := newWebRTCHost(t)
+
+	t.Run("SetReadDeadline", func(t *testing.T) {
+		go func() {
+			lconn, err := listener.Accept()
+			if !assert.NoError(t, err) {
+				return
+			}
+			_, err = lconn.AcceptStream()
+			if !assert.NoError(t, err) {
+				return
+			}
+		}()
+
+		conn, err := a.T.Dial(context.Background(), b.Addr, b.ID())
+		require.NoError(t, err)
+		stream, err := conn.OpenStream(context.Background())
+		require.NoError(t, err)
+
+		// deadline set to the past
+		stream.SetReadDeadline(time.Now().Add(-200 * time.Millisecond))
+		_, err = stream.Read([]byte{0, 0})
+		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+
+		// future deadline exceeded
+		stream.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		_, err = stream.Read([]byte{0, 0})
+		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+	})
+
+	t.Run("SetWriteDeadline", func(t *testing.T) {
+		go func() {
+			lconn, err := listener.Accept()
+			if !assert.NoError(t, err) {
+				return
+			}
+			_, err = lconn.AcceptStream()
+			if !assert.NoError(t, err) {
+				return
+			}
+		}()
+
+		conn, err := a.T.Dial(context.Background(), b.Addr, b.ID())
+		require.NoError(t, err)
+		stream, err := conn.OpenStream(context.Background())
+		require.NoError(t, err)
+
+		stream.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+		time.Sleep(201 * time.Millisecond)
+		largeBuffer := make([]byte, 2*1024*1024)
+		_, err = stream.Write(largeBuffer)
+		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+	})
 }
