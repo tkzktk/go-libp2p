@@ -15,33 +15,43 @@ import (
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	pionlogger "github.com/pion/logging"
+
 	"github.com/libp2p/go-libp2p/core/peer"
 	tpt "github.com/libp2p/go-libp2p/core/transport"
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
 	"github.com/libp2p/go-libp2p/p2p/transport/webrtcprivate/pb"
 	"github.com/libp2p/go-msgio/pbio"
 	"github.com/pion/webrtc/v3"
+	"go.uber.org/zap/zapcore"
 
 	ma "github.com/multiformats/go-multiaddr"
 	mafmt "github.com/multiformats/go-multiaddr-fmt"
 )
 
 const (
-	name              = "webrtcprivate"
-	maxMsgSize        = 4096
-	streamTimeout     = time.Minute
-	SignalingProtocol = "/webrtc-signaling"
+	name                = "webrtcprivate"
+	maxMsgSize          = 4096
+	connectTimeout      = time.Minute
+	SignalingProtocol   = "/webrtc-signaling"
+	disconnectedTimeout = 20 * time.Second
+	failedTimeout       = 30 * time.Second
+	keepaliveTimeout    = 15 * time.Second
 )
 
-var log = logging.Logger("webrtcprivate")
+var (
+	log        = logging.Logger("webrtcprivate")
+	WebRTCAddr = ma.StringCast("/webrtc")
+)
 
 type transport struct {
-	host         host.Host
-	rcmgr        network.ResourceManager
-	webrtcConfig webrtc.Configuration
+	host                   host.Host
+	rcmgr                  network.ResourceManager
+	webrtcConfig           webrtc.Configuration
+	maxInFlightConnections int
 
-	mu sync.Mutex
-	l  *listener
+	mu       sync.Mutex
+	listener *listener
 }
 
 var _ tpt.Transport = &transport{}
@@ -93,9 +103,10 @@ func newTransport(h host.Host) (*transport, error) {
 	}
 
 	return &transport{
-		host:         h,
-		rcmgr:        h.Network().ResourceManager(),
-		webrtcConfig: config,
+		host:                   h,
+		rcmgr:                  h.Network().ResourceManager(),
+		webrtcConfig:           config,
+		maxInFlightConnections: 16,
 	}, nil
 }
 
@@ -108,14 +119,19 @@ func (t *transport) CanDial(addr ma.Multiaddr) bool {
 
 // Dial implements transport.Transport.
 func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tpt.CapableConn, error) {
+	// Connect to the peer on the circuit address
 	relayAddr := getRelayAddr(raddr)
 	err := t.host.Connect(ctx, peer.AddrInfo{ID: p, Addrs: []ma.Multiaddr{relayAddr}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s stream: %w", SignalingProtocol, err)
 	}
-	scope, err := t.rcmgr.OpenConnection(network.DirOutbound, false, raddr)
+
+	scope, err := t.rcmgr.OpenConnection(network.DirOutbound, true, raddr)
 	if err != nil {
 		log.Debugw("resource manager blocked outgoing connection", "peer", p, "addr", raddr, "error", err)
+		return nil, err
+	}
+	if err := scope.SetPeer(p); err != nil {
 		return nil, err
 	}
 
@@ -129,7 +145,8 @@ func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tp
 }
 
 func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.ConnManagementScope) (tpt.CapableConn, error) {
-	ctx = network.WithUseTransient(ctx, "webrtc private dial")
+	// Start signaling protocol stream
+	ctx = network.WithUseTransient(ctx, "webrtcprivate dial")
 	s, err := t.host.NewStream(ctx, p, SignalingProtocol)
 	if err != nil {
 		return nil, fmt.Errorf("error opening stream %s: %w", SignalingProtocol, err)
@@ -140,19 +157,23 @@ func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.
 		return nil, fmt.Errorf("error attaching signaling stream to %s transport: %w", name, err)
 	}
 
-	if err := s.Scope().ReserveMemory(maxMsgSize, network.ReservationPriorityAlways); err != nil {
+	if err := s.Scope().ReserveMemory(2*maxMsgSize, network.ReservationPriorityAlways); err != nil {
 		s.Reset()
 		return nil, fmt.Errorf("error reserving memory for signaling stream: %w", err)
 	}
 	defer s.Scope().ReleaseMemory(maxMsgSize)
 	defer s.Close()
 
-	s.SetDeadline(time.Now().Add(streamTimeout))
+	deadline := time.Now().Add(connectTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	s.SetDeadline(deadline)
 
-	pc, err := t.connect(ctx, s)
+	pc, err := t.establishPeerConnection(ctx, s)
 	if err != nil {
 		s.Reset()
-		return nil, fmt.Errorf("error creating webrtc.PeerConnection: %w", err)
+		return nil, fmt.Errorf("error establishing webrtc.PeerConnection: %w", err)
 	}
 	return libp2pwebrtc.NewWebRTCConnection(
 		network.DirOutbound,
@@ -167,16 +188,11 @@ func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.
 	)
 }
 
-func (t *transport) connect(ctx context.Context, s network.Stream) (*webrtc.PeerConnection, error) {
-	settings := webrtc.SettingEngine{}
-	settings.DetachDataChannels()
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(settings))
-	pc, err := api.NewPeerConnection(t.webrtcConfig)
+func (t *transport) establishPeerConnection(ctx context.Context, s network.Stream) (*webrtc.PeerConnection, error) {
+	pc, err := t.NewPeerConnection()
 	if err != nil {
-		return nil, fmt.Errorf("error creating peer connection: %w", err)
+		return nil, fmt.Errorf("failed to create webrtc.PeerConnection: %w", err)
 	}
-
-	// Exchange offer and answer with peer
 	r := pbio.NewDelimitedReader(s, maxMsgSize)
 	w := pbio.NewDelimitedWriter(s)
 
@@ -210,11 +226,11 @@ func (t *transport) connect(ctx context.Context, s network.Stream) (*webrtc.Peer
 			return
 		}
 		data := string(b)
-		msg := &pb.Message{
+		msg := pb.Message{
 			Type: pb.Message_ICE_CANDIDATE.Enum(),
 			Data: &data,
 		}
-		if err = w.WriteMsg(msg); err != nil {
+		if err = w.WriteMsg(&msg); err != nil {
 			// We only want to write a single error on this channel
 			select {
 			case writeErr <- fmt.Errorf("failed to write candidate: %w", err):
@@ -228,12 +244,11 @@ func (t *transport) connect(ctx context.Context, s network.Stream) (*webrtc.Peer
 
 	// We initialise a data channel otherwise the offer will have no ICE components
 	// https://stackoverflow.com/a/38872920/759687
-	var streamID uint16
-	dc, err := pc.CreateDataChannel("init", &webrtc.DataChannelInit{ID: &streamID})
+	dc, err := pc.CreateDataChannel("init", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create data channel: %w", err)
 	}
-	// Ensure that we close *this particular* data channel so that when the remote
+	// Ensure that we close this data channel so that when the remote
 	// side does AcceptStream this data channel is not used for the new stream.
 	defer dc.Close()
 
@@ -275,7 +290,7 @@ func (t *transport) connect(ctx context.Context, s network.Stream) (*webrtc.Peer
 	}
 
 	readErr := make(chan error, 1)
-	ctx, cancel := context.WithTimeout(ctx, streamTimeout)
+	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
 	// start a goroutine to read candidates
 	go func() {
@@ -284,7 +299,6 @@ func (t *transport) connect(ctx context.Context, s network.Stream) (*webrtc.Peer
 				return
 			}
 
-			var msg pb.Message
 			err := r.ReadMsg(&msg)
 			if err == io.EOF {
 				return
@@ -324,6 +338,9 @@ func (t *transport) connect(ctx context.Context, s network.Stream) (*webrtc.Peer
 	case err := <-readErr:
 		pc.Close()
 		return nil, err
+	case err := <-writeErr:
+		pc.Close()
+		return nil, err
 	case state := <-connectionState:
 		switch state {
 		default:
@@ -342,17 +359,17 @@ func (t *transport) Listen(laddr ma.Multiaddr) (tpt.Listener, error) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.l != nil {
+	if t.listener != nil {
 		return nil, errors.New("already listening on /webrtc")
 	}
 
 	l := &listener{
-		t:            t,
-		webrtcConfig: t.webrtcConfig,
-		conns:        make(chan tpt.CapableConn, 8),
-		closeC:       make(chan struct{}),
+		transport:     t,
+		connQueue:     make(chan tpt.CapableConn),
+		inflightQueue: make(chan struct{}, t.maxInFlightConnections),
+		closeC:        make(chan struct{}),
 	}
-	t.l = l
+	t.listener = l
 	t.host.SetStreamHandler(SignalingProtocol, l.handleIncoming)
 	return l, nil
 }
@@ -360,8 +377,8 @@ func (t *transport) Listen(laddr ma.Multiaddr) (tpt.Listener, error) {
 func (t *transport) RemoveListener(l *listener) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.l == l {
-		t.l = nil
+	if t.listener == l {
+		t.listener = nil
 		t.host.RemoveStreamHandler(SignalingProtocol)
 	}
 }
@@ -374,6 +391,28 @@ func (*transport) Protocols() []int {
 // Proxy implements transport.Transport.
 func (*transport) Proxy() bool {
 	return false
+}
+
+func (t *transport) NewPeerConnection() (*webrtc.PeerConnection, error) {
+	loggerFactory := pionlogger.NewDefaultLoggerFactory()
+	logLevel := pionlogger.LogLevelDisabled
+	switch log.Level() {
+	case zapcore.DebugLevel:
+		logLevel = pionlogger.LogLevelDebug
+	case zapcore.InfoLevel:
+		logLevel = pionlogger.LogLevelInfo
+	case zapcore.WarnLevel:
+		logLevel = pionlogger.LogLevelWarn
+	case zapcore.ErrorLevel:
+		logLevel = pionlogger.LogLevelError
+	}
+	loggerFactory.DefaultLogLevel = logLevel
+	s := webrtc.SettingEngine{LoggerFactory: loggerFactory}
+	s.SetICETimeouts(disconnectedTimeout, failedTimeout, keepaliveTimeout)
+	s.DetachDataChannels()
+	s.SetIncludeLoopbackCandidate(true)
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
+	return api.NewPeerConnection(t.webrtcConfig)
 }
 
 // getRelayAddr removes /webrtc from addr and returns a circuit v2 only address
