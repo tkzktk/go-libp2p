@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	tpt "github.com/libp2p/go-libp2p/core/transport"
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
 	"github.com/libp2p/go-libp2p/p2p/transport/webrtcprivate/pb"
 	"github.com/libp2p/go-msgio/pbio"
 	ma "github.com/multiformats/go-multiaddr"
+	manet "github.com/multiformats/go-multiaddr/net"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -259,17 +261,13 @@ func (l *listener) handleIncoming(s network.Stream) {
 			log.Debugf("connection setup failed, got state: %s", state)
 			return
 		case webrtc.PeerConnectionStateConnected:
-			conn, _ := libp2pwebrtc.NewWebRTCConnection(
-				network.DirInbound,
-				pc,
-				l.transport,
-				scope,
-				l.transport.host.ID(),
-				ma.StringCast("/webrtc"),
-				s.Conn().RemotePeer(),
-				l.transport.host.Peerstore().PubKey(s.Conn().RemotePeer()),
-				ma.StringCast("/webrtc"),
-			)
+			conn, err := l.setupConnection(pc, scope, s.Conn().RemotePeer())
+			if err != nil {
+				pc.Close()
+				s.Reset()
+				log.Debug("connection setup with %s failed: %w", s.Conn().RemotePeer(), err)
+				return
+			}
 			// Close the stream before we wait for the connection to be accepted
 			s.Close()
 			select {
@@ -282,4 +280,42 @@ func (l *listener) handleIncoming(s network.Stream) {
 			return
 		}
 	}
+}
+
+func (l *listener) setupConnection(pc *webrtc.PeerConnection, scope network.ConnManagementScope, p peer.ID) (tpt.CapableConn, error) {
+	cp, err := getSelectedCandidate(pc)
+	if cp == nil || err != nil {
+		return nil, fmt.Errorf("failed to get selected candidate address, got: %s: %w", cp, err)
+	}
+	localAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Local.Address), Port: int(cp.Local.Port)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to infer local address from candidate %s: %w", cp, err)
+	}
+	localAddr = localAddr.Encapsulate(WebRTCAddr)
+
+	remoteAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Remote.Address), Port: int(cp.Remote.Port)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to infer remote address from candidate %s: %w", cp, err)
+	}
+	remoteAddr = remoteAddr.Encapsulate(WebRTCAddr)
+
+	conn, err := libp2pwebrtc.NewWebRTCConnection(
+		network.DirInbound,
+		pc,
+		l.transport,
+		scope,
+		l.transport.host.ID(),
+		localAddr,
+		p,
+		l.transport.host.Peerstore().PubKey(p), // we have the public key from the relayed connection
+		remoteAddr,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tranport.CapableConn: %w", err)
+	}
+	if l.transport.gater != nil && l.transport.gater.InterceptSecured(network.DirOutbound, p, conn) {
+		conn.Close()
+		return nil, fmt.Errorf("conn gater refused connection to addr: %s", conn.RemoteMultiaddr())
+	}
+	return conn, nil
 }
