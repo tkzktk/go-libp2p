@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 
 	logging "github.com/ipfs/go-log/v2"
+	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	pionlogger "github.com/pion/logging"
@@ -27,6 +29,7 @@ import (
 
 	ma "github.com/multiformats/go-multiaddr"
 	mafmt "github.com/multiformats/go-multiaddr-fmt"
+	manet "github.com/multiformats/go-multiaddr/net"
 )
 
 const (
@@ -48,6 +51,7 @@ type transport struct {
 	host                   host.Host
 	rcmgr                  network.ResourceManager
 	webrtcConfig           webrtc.Configuration
+	gater                  connmgr.ConnectionGater
 	maxInFlightConnections int
 
 	mu       sync.Mutex
@@ -175,17 +179,45 @@ func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.
 		s.Reset()
 		return nil, fmt.Errorf("error establishing webrtc.PeerConnection: %w", err)
 	}
-	return libp2pwebrtc.NewWebRTCConnection(
+
+	cp, err := getSelectedCandidate(pc)
+	if cp == nil || err != nil {
+		s.Reset()
+		return nil, fmt.Errorf("failed to get selected candidate address, got: %s: %w", cp, err)
+	}
+	localAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Local.Address), Port: int(cp.Local.Port)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to infer local address from candidate %s: %w", cp, err)
+	}
+	localAddr = localAddr.Encapsulate(WebRTCAddr)
+
+	remoteAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Remote.Address), Port: int(cp.Remote.Port)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to infer remote address from candidate %s: %w", cp, err)
+	}
+	remoteAddr = remoteAddr.Encapsulate(WebRTCAddr)
+
+	conn, err := libp2pwebrtc.NewWebRTCConnection(
 		network.DirOutbound,
 		pc,
 		t,
 		scope,
 		t.host.ID(),
-		ma.StringCast("/webrtc"),
+		localAddr,
 		p,
-		t.host.Network().Peerstore().PubKey(p),
-		ma.StringCast("/webrtc"),
+		t.host.Network().Peerstore().PubKey(p), // we have the pubkey from the relayed connection
+		remoteAddr,
 	)
+	if err != nil {
+		pc.Close()
+		return nil, fmt.Errorf("failed to create transport.CapableConn: %w", err)
+	}
+
+	if t.gater != nil && !t.gater.InterceptSecured(network.DirOutbound, p, conn) {
+		conn.Close()
+		return nil, fmt.Errorf("conn gater refused connection to addr: %s", conn.RemoteMultiaddr())
+	}
+	return conn, nil
 }
 
 func (t *transport) establishPeerConnection(ctx context.Context, s network.Stream) (*webrtc.PeerConnection, error) {
@@ -426,4 +458,17 @@ func getRelayAddr(addr ma.Multiaddr) ma.Multiaddr {
 		return first
 	}
 	return first.Encapsulate(rest)
+}
+
+func getSelectedCandidate(pc *webrtc.PeerConnection) (*webrtc.ICECandidatePair, error) {
+	if pc.SCTP() == nil {
+		return nil, errors.New("no sctp transport")
+	}
+	if pc.SCTP().Transport() == nil {
+		return nil, errors.New("no dtls transport")
+	}
+	if pc.SCTP().Transport().ICETransport() == nil {
+		return nil, errors.New("no ice transport")
+	}
+	return pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair()
 }
