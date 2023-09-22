@@ -3,6 +3,7 @@ package libp2pwebrtcprivate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -82,18 +83,44 @@ func (l *listener) handleIncoming(s network.Stream) {
 
 	s.SetDeadline(time.Now().Add(connectTimeout))
 
-	scope, err := l.transport.rcmgr.OpenConnection(network.DirInbound, false, ma.StringCast("/webrtc"))
+	scope, err := l.transport.rcmgr.OpenConnection(network.DirInbound, false, ma.StringCast("/webrtc")) // we don't have a better remote adress right now
 	if err != nil {
 		s.Reset()
 		log.Debug("failed to create connection scope:", err)
 		return
 	}
 
-	pc, err := l.transport.NewPeerConnection()
+	pc, err := l.establishPeerConnection(ctx, s)
 	if err != nil {
 		s.Reset()
-		log.Debug("error creating a webrtc.PeerConnection:", err)
+		log.Debug("failed to establish connection with %s: %s", s.Conn().RemotePeer(), err)
 		return
+	}
+
+	conn, err := l.setupConnection(pc, scope, s.Conn().RemotePeer())
+	if err != nil {
+		pc.Close()
+		s.Reset()
+		log.Debug("connection setup with %s failed: %w", s.Conn().RemotePeer(), err)
+		return
+	}
+	// Close the stream before we wait for the connection to be accepted
+	s.Close()
+	select {
+	case l.connQueue <- conn:
+	case <-l.closeC:
+		conn.Close()
+		log.Debug("listener closed: dropping conn from %s", s.Conn().RemotePeer())
+	}
+	return
+}
+
+func (l *listener) establishPeerConnection(ctx context.Context, s network.Stream) (*webrtc.PeerConnection, error) {
+	pc, err := l.transport.NewPeerConnection()
+	if err != nil {
+		err = fmt.Errorf("error creating a webrtc.PeerConnection: %w", err)
+		log.Debug(err)
+		return nil, err
 	}
 	r := pbio.NewDelimitedReader(s, maxMsgSize)
 	w := pbio.NewDelimitedWriter(s)
@@ -147,36 +174,30 @@ func (l *listener) handleIncoming(s network.Stream) {
 	// read an incoming offer
 	var msg pb.Message
 	if err := r.ReadMsg(&msg); err != nil {
-		s.Reset()
-		log.Debug("failed to read offer", err)
-		return
+		err = fmt.Errorf("failed to read offer: %w", err)
+		return nil, err
 	}
 	if msg.Type == nil || *msg.Type != pb.Message_SDP_OFFER {
-		s.Reset()
-		log.Debugf("invalid message: msg.Type expected %s got %s", pb.Message_SDP_OFFER, msg.Type)
-		return
+		err = fmt.Errorf("invalid message: msg.Type expected %s got %s", pb.Message_SDP_OFFER, msg.Type)
+		return nil, err
 	}
 	if msg.Data == nil || *msg.Data == "" {
-		s.Reset()
-		log.Debugf("invalid message: empty data")
-		return
+		err = errors.New("invalid message: empty data")
+		return nil, err
 	}
 	offer := webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer,
 		SDP:  *msg.Data,
 	}
 	if err := pc.SetRemoteDescription(offer); err != nil {
-		s.Reset()
-		log.Debug("failed to set remote description: %v", err)
-		return
+		err = fmt.Errorf("failed to set remote description: %w", err)
+		return nil, err
 	}
 
 	// send an answer
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
-		s.Reset()
-		log.Debug("failed to create answer: %v", err)
-		return
+		return nil, fmt.Errorf("failed to create answer: %w", err)
 	}
 
 	answerMessage := &pb.Message{
@@ -184,15 +205,11 @@ func (l *listener) handleIncoming(s network.Stream) {
 		Data: &answer.SDP,
 	}
 	if err := w.WriteMsg(answerMessage); err != nil {
-		s.Reset()
-		log.Debug("failed to write answer:", err)
-		return
+		return nil, fmt.Errorf("failed to write answer: %w", err)
 	}
 
 	if err := pc.SetLocalDescription(answer); err != nil {
-		s.Reset()
-		log.Debug("failed to set local description:", err)
-		return
+		return nil, fmt.Errorf("failed to set local description: %w", err)
 	}
 
 	readErr := make(chan error, 1)
@@ -203,7 +220,6 @@ func (l *listener) handleIncoming(s network.Stream) {
 				return
 			}
 
-			var msg pb.Message
 			err := r.ReadMsg(&msg)
 			if err == io.EOF {
 				return
@@ -240,44 +256,20 @@ func (l *listener) handleIncoming(s network.Stream) {
 	select {
 	case <-ctx.Done():
 		pc.Close()
-		s.Reset()
-		log.Debug(ctx.Err())
-		return
+		return nil, ctx.Err()
 	case err := <-writeErr:
 		pc.Close()
-		s.Reset()
-		log.Debug(err)
-		return
+		return nil, fmt.Errorf("error writing candidate: %w", err)
 	case err := <-readErr:
 		pc.Close()
-		s.Reset()
-		log.Debug(err)
-		return
+		return nil, fmt.Errorf("error reading candidate: %w", err)
 	case state := <-connectionState:
 		switch state {
 		default:
 			pc.Close()
-			s.Reset()
-			log.Debugf("connection setup failed, got state: %s", state)
-			return
+			return nil, fmt.Errorf("failed to establish webrtc.PeerConnection, state: %s", state)
 		case webrtc.PeerConnectionStateConnected:
-			conn, err := l.setupConnection(pc, scope, s.Conn().RemotePeer())
-			if err != nil {
-				pc.Close()
-				s.Reset()
-				log.Debug("connection setup with %s failed: %w", s.Conn().RemotePeer(), err)
-				return
-			}
-			// Close the stream before we wait for the connection to be accepted
-			s.Close()
-			select {
-			case l.connQueue <- conn:
-			case <-l.closeC:
-				s.Reset()
-				conn.Close()
-				log.Debug("listener closed: dropping conn from %s", s.Conn().RemotePeer())
-			}
-			return
+			return pc, nil
 		}
 	}
 }
