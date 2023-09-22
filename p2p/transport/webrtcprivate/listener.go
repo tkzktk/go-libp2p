@@ -16,7 +16,6 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/transport/webrtcprivate/pb"
 	"github.com/libp2p/go-msgio/pbio"
 	ma "github.com/multiformats/go-multiaddr"
-	manet "github.com/multiformats/go-multiaddr/net"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -112,7 +111,6 @@ func (l *listener) handleIncoming(s network.Stream) {
 		conn.Close()
 		log.Debug("listener closed: dropping conn from %s", s.Conn().RemotePeer())
 	}
-	return
 }
 
 func (l *listener) establishPeerConnection(ctx context.Context, s network.Stream) (*webrtc.PeerConnection, error) {
@@ -275,21 +273,10 @@ func (l *listener) establishPeerConnection(ctx context.Context, s network.Stream
 }
 
 func (l *listener) setupConnection(pc *webrtc.PeerConnection, scope network.ConnManagementScope, p peer.ID) (tpt.CapableConn, error) {
-	cp, err := getSelectedCandidate(pc)
-	if cp == nil || err != nil {
-		return nil, fmt.Errorf("failed to get selected candidate address, got: %s: %w", cp, err)
-	}
-	localAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Local.Address), Port: int(cp.Local.Port)})
+	localAddr, remoteAddr, err := getConnectionAddresses(pc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to infer local address from candidate %s: %w", cp, err)
+		return nil, fmt.Errorf("failed to get connection addresses: %w", err)
 	}
-	localAddr = localAddr.Encapsulate(WebRTCAddr)
-
-	remoteAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Remote.Address), Port: int(cp.Remote.Port)})
-	if err != nil {
-		return nil, fmt.Errorf("failed to infer remote address from candidate %s: %w", cp, err)
-	}
-	remoteAddr = remoteAddr.Encapsulate(WebRTCAddr)
 
 	conn, err := libp2pwebrtc.NewWebRTCConnection(
 		network.DirInbound,

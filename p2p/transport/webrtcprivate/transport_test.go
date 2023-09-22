@@ -109,6 +109,39 @@ func TestSingleDial(t *testing.T) {
 	cb.Close()
 }
 
+func TestConnectionAddresses(t *testing.T) {
+	a := newWebRTCHost(t)
+	b := newRelayedHost(t)
+	defer b.Close()
+	defer a.Close()
+
+	l, err := b.T.Listen(ma.StringCast("/webrtc"))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ca, err := a.T.Dial(ctx, b.Addr, b.ID())
+	require.NoError(t, err)
+
+	cb, err := l.Accept()
+	require.NoError(t, err)
+
+	// Test connection addresses
+	require.Equal(t, cb.RemoteMultiaddr(), ca.LocalMultiaddr())
+	require.Equal(t, cb.LocalMultiaddr(), ca.RemoteMultiaddr())
+
+	testAddr := func(addr ma.Multiaddr) {
+		_, err := addr.ValueForProtocol(ma.P_UDP)
+		require.NoError(t, err)
+		_, err = addr.ValueForProtocol(ma.P_WEBRTC)
+		require.NoError(t, err)
+	}
+	testAddr(ca.LocalMultiaddr())
+	testAddr(ca.RemoteMultiaddr())
+	testAddr(cb.LocalMultiaddr())
+	testAddr(cb.RemoteMultiaddr())
+}
+
 func TestMultipleDials(t *testing.T) {
 	a := newWebRTCHost(t)
 	var wg sync.WaitGroup

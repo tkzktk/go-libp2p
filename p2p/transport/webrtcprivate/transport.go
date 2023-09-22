@@ -180,22 +180,11 @@ func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.
 		return nil, fmt.Errorf("error establishing webrtc.PeerConnection: %w", err)
 	}
 
-	cp, err := getSelectedCandidate(pc)
-	if cp == nil || err != nil {
+	localAddr, remoteAddr, err := getConnectionAddresses(pc)
+	if err != nil {
 		s.Reset()
-		return nil, fmt.Errorf("failed to get selected candidate address, got: %s: %w", cp, err)
+		return nil, fmt.Errorf("failed to get connection addresses: %w", err)
 	}
-	localAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Local.Address), Port: int(cp.Local.Port)})
-	if err != nil {
-		return nil, fmt.Errorf("failed to infer local address from candidate %s: %w", cp, err)
-	}
-	localAddr = localAddr.Encapsulate(WebRTCAddr)
-
-	remoteAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Remote.Address), Port: int(cp.Remote.Port)})
-	if err != nil {
-		return nil, fmt.Errorf("failed to infer remote address from candidate %s: %w", cp, err)
-	}
-	remoteAddr = remoteAddr.Encapsulate(WebRTCAddr)
 
 	conn, err := libp2pwebrtc.NewWebRTCConnection(
 		network.DirOutbound,
@@ -460,15 +449,32 @@ func getRelayAddr(addr ma.Multiaddr) ma.Multiaddr {
 	return first.Encapsulate(rest)
 }
 
-func getSelectedCandidate(pc *webrtc.PeerConnection) (*webrtc.ICECandidatePair, error) {
+func getConnectionAddresses(pc *webrtc.PeerConnection) (ma.Multiaddr, ma.Multiaddr, error) {
 	if pc.SCTP() == nil {
-		return nil, errors.New("no sctp transport")
+		return nil, nil, errors.New("no sctp transport")
 	}
 	if pc.SCTP().Transport() == nil {
-		return nil, errors.New("no dtls transport")
+		return nil, nil, errors.New("no dtls transport")
 	}
 	if pc.SCTP().Transport().ICETransport() == nil {
-		return nil, errors.New("no ice transport")
+		return nil, nil, errors.New("no ice transport")
 	}
-	return pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair()
+	cp, err := pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair()
+	if cp == nil || err != nil {
+		return nil, nil, fmt.Errorf("invalid candidate pair %s: %w", cp, err)
+	}
+
+	localAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Local.Address), Port: int(cp.Local.Port)})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to infer local address from candidate %s: %w", cp, err)
+	}
+	localAddr = localAddr.Encapsulate(WebRTCAddr)
+
+	remoteAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Remote.Address), Port: int(cp.Remote.Port)})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to infer remote address from candidate %s: %w", cp, err)
+	}
+	remoteAddr = remoteAddr.Encapsulate(WebRTCAddr)
+
+	return localAddr, remoteAddr, nil
 }
