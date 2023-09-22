@@ -265,12 +265,16 @@ func (t *transport) establishPeerConnection(ctx context.Context, s network.Strea
 
 	// We initialise a data channel otherwise the offer will have no ICE components
 	// https://stackoverflow.com/a/38872920/759687
-	dc, err := pc.CreateDataChannel("init", nil)
+	// We use out-of-band negotiation(negotiated=true), to ensure that this channel doesn't
+	// get accepted as a stream in AcceptStream on the remote side
+	negotiated := true
+	// Any value here is fine since this will be closed on connection establishment. We use 0 since
+	// it is in line with the handshake channel used in /webrtc-direct stream
+	var initStreamID uint16
+	dc, err := pc.CreateDataChannel("init", &webrtc.DataChannelInit{Negotiated: &negotiated, ID: &initStreamID})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create data channel: %w", err)
 	}
-	// Ensure that we close this data channel so that when the remote
-	// side does AcceptStream this data channel is not used for the new stream.
 	defer dc.Close()
 
 	// create an offer
