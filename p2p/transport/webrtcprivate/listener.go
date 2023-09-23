@@ -117,6 +117,8 @@ func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope 
 		log.Debug(err)
 		return nil, err
 	}
+	dataChannelQueue := libp2pwebrtc.SetupDataChannelQueue(pc, maxAcceptQueueLen)
+
 	r := pbio.NewDelimitedReader(s, maxMsgSize)
 	w := pbio.NewDelimitedWriter(s)
 
@@ -283,6 +285,7 @@ func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope 
 		s.Conn().RemotePeer(),
 		l.transport.host.Peerstore().PubKey(s.Conn().RemotePeer()), // we have the public key from the relayed connection
 		remoteAddr,
+		dataChannelQueue,
 	)
 	if err != nil {
 		pc.Close()
