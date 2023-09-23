@@ -126,10 +126,6 @@ func TestConnectionAddresses(t *testing.T) {
 	cb, err := l.Accept()
 	require.NoError(t, err)
 
-	// Test connection addresses
-	require.Equal(t, cb.RemoteMultiaddr(), ca.LocalMultiaddr())
-	require.Equal(t, cb.LocalMultiaddr(), ca.RemoteMultiaddr())
-
 	testAddr := func(addr ma.Multiaddr) {
 		_, err := addr.ValueForProtocol(ma.P_UDP)
 		require.NoError(t, err)

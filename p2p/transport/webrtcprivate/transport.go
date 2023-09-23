@@ -40,6 +40,7 @@ const (
 	disconnectedTimeout = 20 * time.Second
 	failedTimeout       = 30 * time.Second
 	keepaliveTimeout    = 15 * time.Second
+	maxAcceptQueueLen   = 10
 )
 
 var (
@@ -174,48 +175,28 @@ func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.
 	}
 	s.SetDeadline(deadline)
 
-	pc, err := t.establishPeerConnection(ctx, s)
+	conn, err := t.setupConnection(ctx, s, scope)
 	if err != nil {
 		s.Reset()
 		return nil, fmt.Errorf("error establishing webrtc.PeerConnection: %w", err)
 	}
 
-	localAddr, remoteAddr, err := getConnectionAddresses(pc)
-	if err != nil {
-		s.Reset()
-		return nil, fmt.Errorf("failed to get connection addresses: %w", err)
-	}
-
-	conn, err := libp2pwebrtc.NewWebRTCConnection(
-		network.DirOutbound,
-		pc,
-		t,
-		scope,
-		t.host.ID(),
-		localAddr,
-		p,
-		t.host.Network().Peerstore().PubKey(p), // we have the pubkey from the relayed connection
-		remoteAddr,
-	)
-	if err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("failed to create transport.CapableConn: %w", err)
-	}
-
 	if t.gater != nil && !t.gater.InterceptSecured(network.DirOutbound, p, conn) {
 		conn.Close()
+		s.Reset()
 		return nil, fmt.Errorf("conn gater refused connection to addr: %s", conn.RemoteMultiaddr())
 	}
 	return conn, nil
 }
 
-func (t *transport) establishPeerConnection(ctx context.Context, s network.Stream) (*webrtc.PeerConnection, error) {
+func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope network.ConnManagementScope) (tpt.CapableConn, error) {
+	r := pbio.NewDelimitedReader(s, maxMsgSize)
+	w := pbio.NewDelimitedWriter(s)
+
 	pc, err := t.NewPeerConnection()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create webrtc.PeerConnection: %w", err)
 	}
-	r := pbio.NewDelimitedReader(s, maxMsgSize)
-	w := pbio.NewDelimitedWriter(s)
 
 	// register peerconnection state update callback
 	connectionState := make(chan webrtc.PeerConnectionState, 1)
@@ -268,8 +249,8 @@ func (t *transport) establishPeerConnection(ctx context.Context, s network.Strea
 	// We use out-of-band negotiation(negotiated=true), to ensure that this channel doesn't
 	// get accepted as a stream in AcceptStream on the remote side
 	negotiated := true
-	// Any value here is fine since this will be closed on connection establishment. We use 0 since
-	// it is in line with the handshake channel used in /webrtc-direct stream
+	// Any value here is fine since this will be closed on connection establishment. We use 0 as
+	// it is also used for the /webrtc-direct handshake channel
 	var initStreamID uint16
 	dc, err := pc.CreateDataChannel("init", &webrtc.DataChannelInit{Negotiated: &negotiated, ID: &initStreamID})
 	if err != nil {
@@ -286,7 +267,6 @@ func (t *transport) establishPeerConnection(ctx context.Context, s network.Strea
 		Type: pb.Message_SDP_OFFER.Enum(),
 		Data: &offer.SDP,
 	}
-
 	// send offer to peer
 	if err := w.WriteMsg(offerMessage); err != nil {
 		return nil, fmt.Errorf("failed to write to stream: %w", err)
@@ -372,9 +352,30 @@ func (t *transport) establishPeerConnection(ctx context.Context, s network.Strea
 			pc.Close()
 			return nil, fmt.Errorf("conn establishment failed, state: %s", state)
 		case webrtc.PeerConnectionStateConnected:
-			return pc, nil
 		}
 	}
+	localAddr, remoteAddr, err := getConnectionAddresses(pc)
+	if err != nil {
+		pc.Close()
+		return nil, fmt.Errorf("failed to get connection addresses: %w", err)
+	}
+
+	conn, err := libp2pwebrtc.NewWebRTCConnection(
+		network.DirOutbound,
+		pc,
+		t,
+		scope,
+		t.host.ID(),
+		localAddr,
+		s.Conn().RemotePeer(),
+		t.host.Network().Peerstore().PubKey(s.Conn().RemotePeer()), // we have the pubkey from the relayed connection
+		remoteAddr,
+	)
+	if err != nil {
+		pc.Close()
+		return nil, fmt.Errorf("failed to create tpt.CapableConn: %w", err)
+	}
+	return conn, nil
 }
 
 // Listen implements transport.Transport.
@@ -445,7 +446,7 @@ func getRelayAddr(addr ma.Multiaddr) ma.Multiaddr {
 	first, rest := ma.SplitFunc(addr, func(c ma.Component) bool {
 		return c.Protocol().Code == ma.P_WEBRTC
 	})
-	// removes /webrtc prefix
+	// remove /webrtc prefix
 	_, rest = ma.SplitFirst(rest)
 	if rest == nil {
 		return first
