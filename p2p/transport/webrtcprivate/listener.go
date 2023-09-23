@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 	tpt "github.com/libp2p/go-libp2p/core/transport"
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
 	"github.com/libp2p/go-libp2p/p2p/transport/webrtcprivate/pb"
@@ -89,19 +88,17 @@ func (l *listener) handleIncoming(s network.Stream) {
 		return
 	}
 
-	pc, err := l.establishPeerConnection(ctx, s)
+	conn, err := l.setupConnection(ctx, s, scope)
 	if err != nil {
 		s.Reset()
+		scope.Done()
 		log.Debug("failed to establish connection with %s: %s", s.Conn().RemotePeer(), err)
 		return
 	}
 
-	conn, err := l.setupConnection(pc, scope, s.Conn().RemotePeer())
-	if err != nil {
-		pc.Close()
-		s.Reset()
-		log.Debug("connection setup with %s failed: %w", s.Conn().RemotePeer(), err)
-		return
+	if l.transport.gater != nil && l.transport.gater.InterceptSecured(network.DirOutbound, s.Conn().RemotePeer(), conn) {
+		conn.Close()
+		log.Debugf("conn gater refused connection to addr: %s", conn.RemoteMultiaddr())
 	}
 	// Close the stream before we wait for the connection to be accepted
 	s.Close()
@@ -113,7 +110,7 @@ func (l *listener) handleIncoming(s network.Stream) {
 	}
 }
 
-func (l *listener) establishPeerConnection(ctx context.Context, s network.Stream) (*webrtc.PeerConnection, error) {
+func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope network.ConnManagementScope) (tpt.CapableConn, error) {
 	pc, err := l.transport.NewPeerConnection()
 	if err != nil {
 		err = fmt.Errorf("error creating a webrtc.PeerConnection: %w", err)
@@ -267,14 +264,12 @@ func (l *listener) establishPeerConnection(ctx context.Context, s network.Stream
 			pc.Close()
 			return nil, fmt.Errorf("failed to establish webrtc.PeerConnection, state: %s", state)
 		case webrtc.PeerConnectionStateConnected:
-			return pc, nil
 		}
 	}
-}
 
-func (l *listener) setupConnection(pc *webrtc.PeerConnection, scope network.ConnManagementScope, p peer.ID) (tpt.CapableConn, error) {
 	localAddr, remoteAddr, err := getConnectionAddresses(pc)
 	if err != nil {
+		pc.Close()
 		return nil, fmt.Errorf("failed to get connection addresses: %w", err)
 	}
 
@@ -285,16 +280,13 @@ func (l *listener) setupConnection(pc *webrtc.PeerConnection, scope network.Conn
 		scope,
 		l.transport.host.ID(),
 		localAddr,
-		p,
-		l.transport.host.Peerstore().PubKey(p), // we have the public key from the relayed connection
+		s.Conn().RemotePeer(),
+		l.transport.host.Peerstore().PubKey(s.Conn().RemotePeer()), // we have the public key from the relayed connection
 		remoteAddr,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create tranport.CapableConn: %w", err)
-	}
-	if l.transport.gater != nil && l.transport.gater.InterceptSecured(network.DirOutbound, p, conn) {
-		conn.Close()
-		return nil, fmt.Errorf("conn gater refused connection to addr: %s", conn.RemoteMultiaddr())
+		pc.Close()
+		return nil, fmt.Errorf("error establishing tpt.CapableConn: %w", err)
 	}
 	return conn, nil
 }
