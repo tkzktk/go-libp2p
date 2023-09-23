@@ -198,6 +198,8 @@ func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope
 		return nil, fmt.Errorf("failed to create webrtc.PeerConnection: %w", err)
 	}
 
+	dataChannelQueue := libp2pwebrtc.SetupDataChannelQueue(pc, maxAcceptQueueLen)
+
 	// register peerconnection state update callback
 	connectionState := make(chan webrtc.PeerConnectionState, 1)
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
@@ -370,6 +372,7 @@ func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope
 		s.Conn().RemotePeer(),
 		t.host.Network().Peerstore().PubKey(s.Conn().RemotePeer()), // we have the pubkey from the relayed connection
 		remoteAddr,
+		dataChannelQueue,
 	)
 	if err != nil {
 		pc.Close()

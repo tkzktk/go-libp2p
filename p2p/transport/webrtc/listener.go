@@ -229,6 +229,7 @@ func (l *listener) setupConnection(
 	if err != nil {
 		return nil, err
 	}
+	dataChannelQueue := SetupDataChannelQueue(pc, maxAcceptQueueLen)
 
 	negotiated, id := handshakeChannelNegotiated, handshakeChannelID
 	rawDatachannel, err := pc.CreateDataChannel("", &webrtc.DataChannelInit{
@@ -285,6 +286,7 @@ func (l *listener) setupConnection(
 		"",  // remotePeer
 		nil, // remoteKey
 		remoteMultiaddr,
+		dataChannelQueue,
 	)
 	if err != nil {
 		return nil, err

@@ -37,7 +37,7 @@ func (errConnectionTimeout) Error() string   { return "connection timeout" }
 func (errConnectionTimeout) Timeout() bool   { return true }
 func (errConnectionTimeout) Temporary() bool { return false }
 
-type dataChannel struct {
+type DetachedDataChannel struct {
 	stream  datachannel.ReadWriteCloser
 	channel *webrtc.DataChannel
 }
@@ -60,10 +60,9 @@ type connection struct {
 	streams      map[uint16]*stream
 	nextStreamID atomic.Int32
 
-	acceptQueue chan dataChannel
-
-	ctx    context.Context
-	cancel context.CancelFunc
+	acceptQueue chan DetachedDataChannel
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // NewWebRTCConnection creates a transport.CapableConn from a webrtc.PeerConnection
@@ -79,6 +78,7 @@ func NewWebRTCConnection(
 	remotePeer peer.ID,
 	remoteKey ic.PubKey,
 	remoteMultiaddr ma.Multiaddr,
+	datachannelQueue chan DetachedDataChannel,
 ) (*connection, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &connection{
@@ -95,8 +95,7 @@ func NewWebRTCConnection(
 		ctx:             ctx,
 		cancel:          cancel,
 		streams:         make(map[uint16]*stream),
-
-		acceptQueue: make(chan dataChannel, maxAcceptQueueLen),
+		acceptQueue:     datachannelQueue,
 	}
 	switch direction {
 	case network.DirInbound:
@@ -107,33 +106,14 @@ func NewWebRTCConnection(
 	}
 
 	pc.OnConnectionStateChange(c.onConnectionStateChange)
-	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		if c.IsClosed() {
-			return
-		}
-		// Limit the number of streams, since we're not able to actually properly close them.
-		// See https://github.com/libp2p/specs/issues/575 for details.
-		if *dc.ID() > maxDataChannelID {
-			c.Close()
-			return
-		}
-		dc.OnOpen(func() {
-			rwc, err := dc.Detach()
-			if err != nil {
-				log.Warnf("could not detach datachannel: id: %d", *dc.ID())
-				return
-			}
-			select {
-			case c.acceptQueue <- dataChannel{rwc, dc}:
-			default:
-				log.Warnf("connection busy, rejecting stream")
-				b, _ := proto.Marshal(&pb.Message{Flag: pb.Message_RESET.Enum()})
-				w := msgio.NewWriter(rwc)
-				w.WriteMsg(b)
-				rwc.Close()
-			}
-		})
-	})
+
+	// Between the connection establishing and the callback update in the above line, the
+	// connection may have been closed
+	state := pc.ConnectionState()
+	if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+		pc.Close()
+		return nil, errors.New("connection closed")
+	}
 
 	return c, nil
 }
@@ -315,4 +295,39 @@ func (c *connection) setRemotePeer(id peer.ID) {
 // only used during connection setup
 func (c *connection) setRemotePublicKey(key ic.PubKey) {
 	c.remoteKey = key
+}
+
+// SetupDataChannelQueue sets callback on the peer connection to push incoming
+// data channels on to the returned queue after detaching the data channel.
+//
+// We need to ensure that the data channel is enqueued from the onOpen callback
+// to avoid a race condition in pion: https://github.com/pion/webrtc/issues/2586
+func SetupDataChannelQueue(pc *webrtc.PeerConnection, queueLen int) chan DetachedDataChannel {
+	queue := make(chan DetachedDataChannel, queueLen)
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		// Limit the number of streams, since we're not able to actually properly close them.
+		// See https://github.com/libp2p/specs/issues/575 for details.
+		if *dc.ID() > maxDataChannelID {
+			dc.Close()
+			return
+		}
+		dc.OnOpen(func() {
+			rwc, err := dc.Detach()
+			if err != nil {
+				log.Warnf("could not detach datachannel: id: %d", *dc.ID())
+				return
+			}
+			select {
+			case queue <- DetachedDataChannel{rwc, dc}:
+			default:
+				log.Warnf("connection busy, rejecting stream")
+				b, _ := proto.Marshal(&pb.Message{Flag: pb.Message_RESET.Enum()})
+				w := msgio.NewWriter(rwc)
+				w.WriteMsg(b)
+				rwc.Close()
+			}
+		})
+
+	})
+	return queue
 }
