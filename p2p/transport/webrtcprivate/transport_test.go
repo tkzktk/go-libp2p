@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	blankhost "github.com/libp2p/go-libp2p/p2p/host/blank"
 	swarmt "github.com/libp2p/go-libp2p/p2p/net/swarm/testing"
@@ -109,7 +110,7 @@ func TestSingleDial(t *testing.T) {
 	cb.Close()
 }
 
-func TestConnectionAddresses(t *testing.T) {
+func TestConnectionProperties(t *testing.T) {
 	a := newWebRTCHost(t)
 	b := newRelayedHost(t)
 	defer b.Close()
@@ -126,16 +127,24 @@ func TestConnectionAddresses(t *testing.T) {
 	cb, err := l.Accept()
 	require.NoError(t, err)
 
-	testAddr := func(addr ma.Multiaddr) {
-		_, err := addr.ValueForProtocol(ma.P_UDP)
-		require.NoError(t, err)
-		_, err = addr.ValueForProtocol(ma.P_WEBRTC)
-		require.NoError(t, err)
-	}
-	testAddr(ca.LocalMultiaddr())
-	testAddr(ca.RemoteMultiaddr())
-	testAddr(cb.LocalMultiaddr())
-	testAddr(cb.RemoteMultiaddr())
+	t.Run("Addresses", func(t *testing.T) {
+		testAddr := func(addr ma.Multiaddr) {
+			_, err := addr.ValueForProtocol(ma.P_UDP)
+			require.NoError(t, err)
+			_, err = addr.ValueForProtocol(ma.P_WEBRTC)
+			require.NoError(t, err)
+		}
+		testAddr(ca.LocalMultiaddr())
+		testAddr(ca.RemoteMultiaddr())
+		testAddr(cb.LocalMultiaddr())
+		testAddr(cb.RemoteMultiaddr())
+	})
+
+	t.Run("ConnectionState", func(t *testing.T) {
+		require.Equal(t, network.ConnectionState{Transport: "webrtc"}, ca.ConnState())
+		require.Equal(t, network.ConnectionState{Transport: "webrtc"}, cb.ConnState())
+	})
+
 }
 
 func TestMultipleDials(t *testing.T) {

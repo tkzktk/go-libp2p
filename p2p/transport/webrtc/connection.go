@@ -56,6 +56,8 @@ type connection struct {
 	remoteKey       ic.PubKey
 	remoteMultiaddr ma.Multiaddr
 
+	connectionState network.ConnectionState
+
 	m            sync.Mutex
 	streams      map[uint16]*stream
 	nextStreamID atomic.Int32
@@ -81,6 +83,10 @@ func NewWebRTCConnection(
 	datachannelQueue chan DetachedDataChannel,
 ) (*connection, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+	connectionState := network.ConnectionState{Transport: "webrtc"}
+	if _, ok := transport.(*WebRTCTransport); ok {
+		connectionState = network.ConnectionState{Transport: "webrtc-direct"}
+	}
 	c := &connection{
 		pc:        pc,
 		transport: transport,
@@ -92,10 +98,13 @@ func NewWebRTCConnection(
 		remotePeer:      remotePeer,
 		remoteKey:       remoteKey,
 		remoteMultiaddr: remoteMultiaddr,
-		ctx:             ctx,
-		cancel:          cancel,
-		streams:         make(map[uint16]*stream),
-		acceptQueue:     datachannelQueue,
+
+		connectionState: connectionState,
+
+		ctx:         ctx,
+		cancel:      cancel,
+		streams:     make(map[uint16]*stream),
+		acceptQueue: datachannelQueue,
 	}
 	switch direction {
 	case network.DirInbound:
@@ -120,7 +129,7 @@ func NewWebRTCConnection(
 
 // ConnState implements transport.CapableConn
 func (c *connection) ConnState() network.ConnectionState {
-	return network.ConnectionState{Transport: "webrtc-direct"}
+	return c.connectionState
 }
 
 // Close closes the underlying peerconnection.
