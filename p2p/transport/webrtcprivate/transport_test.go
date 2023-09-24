@@ -198,24 +198,18 @@ func TestMultipleDials(t *testing.T) {
 }
 
 func TestMultipleDialsAndListeners(t *testing.T) {
-	var dialHosts []*webrtcHost
 	const N = 5
+	var hosts []*relayedHost
 	for i := 0; i < N; i++ {
-		dialHosts = append(dialHosts, newWebRTCHost(t))
-		defer dialHosts[i].Close()
-	}
-
-	var listenHosts []*relayedHost
-	for i := 0; i < N; i++ {
-		listenHosts = append(listenHosts, newRelayedHost(t))
-		l, err := listenHosts[i].T.Listen(ma.StringCast("/webrtc"))
+		hosts = append(hosts, newRelayedHost(t))
+		l, err := hosts[i].T.Listen(ma.StringCast("/webrtc"))
 		require.NoError(t, err)
-		defer listenHosts[i].Close()
+		defer hosts[i].Close()
 		defer l.Close()
 	}
 	var wg sync.WaitGroup
 
-	dialAndPing := func(h *webrtcHost, raddr ma.Multiaddr, p peer.ID) {
+	dialAndPing := func(h *relayedHost, raddr ma.Multiaddr, p peer.ID) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		ca, err := h.T.Dial(ctx, raddr, p)
@@ -263,11 +257,11 @@ func TestMultipleDialsAndListeners(t *testing.T) {
 	}
 
 	for i := 0; i < N; i++ {
-		for j := 0; j < N; j++ {
+		for j := i + 1; j < N; j++ {
 			wg.Add(1)
 			go func(i, j int) {
-				go dialAndPing(dialHosts[i], listenHosts[j].Addr, listenHosts[j].ID())
-				acceptAndPong(listenHosts[j])
+				go acceptAndPong(hosts[j])
+				dialAndPing(hosts[i], hosts[j].Addr, hosts[j].ID())
 				wg.Done()
 			}(i, j)
 		}
