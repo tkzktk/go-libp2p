@@ -28,7 +28,6 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	ma "github.com/multiformats/go-multiaddr"
-	mafmt "github.com/multiformats/go-multiaddr-fmt"
 	manet "github.com/multiformats/go-multiaddr/net"
 )
 
@@ -115,11 +114,23 @@ func newTransport(h host.Host) (*transport, error) {
 	}, nil
 }
 
-var dialMatcher = mafmt.And(mafmt.Base(ma.P_CIRCUIT), mafmt.Base(ma.P_WEBRTC))
-
 // CanDial determines if we can dial to an address
 func (t *transport) CanDial(addr ma.Multiaddr) bool {
-	return dialMatcher.Matches(addr)
+	circuit := false
+	webrtc := false
+	ma.ForEach(addr, func(c ma.Component) bool {
+		if c.Protocol().Code == ma.P_CIRCUIT {
+			circuit = true
+			return true
+		}
+		// next element after p2p-circuit should be webrtc
+		if circuit {
+			webrtc = c.Protocol().Code == ma.P_WEBRTC
+			return false
+		}
+		return true
+	})
+	return circuit && webrtc
 }
 
 func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tpt.CapableConn, error) {
@@ -388,12 +399,13 @@ func (t *transport) Listen(laddr ma.Multiaddr) (tpt.Listener, error) {
 	if t.listener != nil {
 		return nil, errors.New("already listening on /webrtc")
 	}
-
+	ctx, cancel := context.WithCancel(context.Background())
 	l := &listener{
 		transport:     t,
 		connQueue:     make(chan tpt.CapableConn),
 		inflightQueue: make(chan struct{}, t.maxInFlightConnections),
-		closeC:        make(chan struct{}),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 	t.listener = l
 	t.host.SetStreamHandler(SignalingProtocol, l.handleSignalingStream)

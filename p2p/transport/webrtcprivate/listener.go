@@ -21,8 +21,9 @@ import (
 type listener struct {
 	transport     *transport
 	connQueue     chan tpt.CapableConn
-	closeC        chan struct{}
 	inflightQueue chan struct{}
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 var _ tpt.Listener = &listener{}
@@ -41,10 +42,13 @@ func (n NetAddr) String() string {
 
 // Accept implements transport.Listener.
 func (l *listener) Accept() (tpt.CapableConn, error) {
+	if l.ctx.Err() != nil {
+		return nil, tpt.ErrListenerClosed
+	}
 	select {
 	case c := <-l.connQueue:
 		return c, nil
-	case <-l.closeC:
+	case <-l.ctx.Done():
 		return nil, tpt.ErrListenerClosed
 	}
 }
@@ -56,7 +60,7 @@ func (l *listener) Addr() net.Addr {
 
 func (l *listener) Close() error {
 	l.transport.RemoveListener(l)
-	close(l.closeC)
+	l.cancel()
 	return nil
 }
 
@@ -68,7 +72,7 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 	select {
 	case l.inflightQueue <- struct{}{}:
 		defer func() { <-l.inflightQueue }()
-	case <-l.closeC:
+	case <-l.ctx.Done():
 		s.Reset()
 		return
 	}
@@ -115,7 +119,7 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 	s.Close()
 	select {
 	case l.connQueue <- conn:
-	case <-l.closeC:
+	case <-l.ctx.Done():
 		conn.Close()
 		log.Debug("listener closed: dropping conn from %s", s.Conn().RemotePeer())
 	}
