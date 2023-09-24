@@ -563,3 +563,76 @@ func TestStreamDeadline(t *testing.T) {
 		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
 	})
 }
+
+func TestCanDial(t *testing.T) {
+	a := newWebRTCHost(t)
+	defer a.Close()
+	b := newWebRTCHost(t)
+
+	tests := []struct {
+		addr    ma.Multiaddr
+		canDial bool
+	}{
+		{
+			addr:    ma.StringCast(fmt.Sprintf("/ip4/1.2.3.4/tcp/1234/p2p/%s/p2p-circuit/", b.ID())),
+			canDial: false,
+		},
+		{
+			addr:    ma.StringCast(fmt.Sprintf("/ip4/1.2.3.4/tcp/1234/p2p/%s/p2p-circuit/webrtc", b.ID())),
+			canDial: true,
+		},
+		{
+			addr:    ma.StringCast(fmt.Sprintf("/ip4/127.0.0.1/udp/1234/quic-v1/p2p/%s/p2p-circuit/", b.ID())),
+			canDial: false,
+		},
+		{
+			addr:    ma.StringCast(fmt.Sprintf("/ip4/127.0.0.1/udp/1234/quic-v1/p2p/%s/p2p-circuit/webrtc/", b.ID())),
+			canDial: true,
+		},
+		{
+			addr:    ma.StringCast("/ip4/1.2.3.4/tcp/1234/webrtc"),
+			canDial: false,
+		},
+		{
+			addr:    ma.StringCast(fmt.Sprintf("/ip4/1.2.3.4/tcp/1234/p2p/%s/webrtc/", b.ID())),
+			canDial: false,
+		},
+		{
+			addr:    ma.StringCast("/ip4/1.2.3.4/tcp/1234/"),
+			canDial: false,
+		},
+	}
+	for i, tt := range tests {
+		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+			require.Equal(t, tt.canDial, a.T.CanDial(tt.addr), "args: %s", tt.addr)
+		})
+	}
+}
+
+func TestCanListenTwice(t *testing.T) {
+	b := newRelayedHost(t)
+	defer b.Close()
+	listener, err := b.T.Listen(WebRTCAddr)
+	require.NoError(t, err)
+	a := newWebRTCHost(t)
+	defer a.Close()
+
+	ca, err := a.T.Dial(context.Background(), b.Addr, b.ID())
+	require.NoError(t, err)
+	cb, err := listener.Accept()
+	require.NoError(t, err)
+	ca.Close()
+	cb.Close()
+	listener.Close()
+	_, err = listener.Accept()
+	require.Error(t, err)
+
+	listener, err = b.T.Listen(WebRTCAddr)
+	require.NoError(t, err)
+	ca, err = a.T.Dial(context.Background(), b.Addr, b.ID())
+	require.NoError(t, err)
+	cb, err = listener.Accept()
+	require.NoError(t, err)
+	ca.Close()
+	cb.Close()
+}
