@@ -122,7 +122,6 @@ func (t *transport) CanDial(addr ma.Multiaddr) bool {
 	return dialMatcher.Matches(addr)
 }
 
-// Dial implements transport.Transport.
 func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tpt.CapableConn, error) {
 	// Connect to the peer on the circuit address
 	relayAddr := getRelayAddr(raddr)
@@ -381,7 +380,6 @@ func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope
 	return conn, nil
 }
 
-// Listen implements transport.Transport.
 func (t *transport) Listen(laddr ma.Multiaddr) (tpt.Listener, error) {
 	if _, err := laddr.ValueForProtocol(ma.P_WEBRTC); err != nil {
 		return nil, fmt.Errorf("invalid listen multiaddr: %s", laddr)
@@ -399,7 +397,7 @@ func (t *transport) Listen(laddr ma.Multiaddr) (tpt.Listener, error) {
 		closeC:        make(chan struct{}),
 	}
 	t.listener = l
-	t.host.SetStreamHandler(SignalingProtocol, l.handleIncoming)
+	t.host.SetStreamHandler(SignalingProtocol, l.handleSignalingStream)
 	return l, nil
 }
 
@@ -412,12 +410,10 @@ func (t *transport) RemoveListener(l *listener) {
 	}
 }
 
-// Protocols implements transport.Transport.
 func (*transport) Protocols() []int {
 	return []int{ma.P_WEBRTC}
 }
 
-// Proxy implements transport.Transport.
 func (*transport) Proxy() bool {
 	return false
 }
@@ -457,7 +453,8 @@ func getRelayAddr(addr ma.Multiaddr) ma.Multiaddr {
 	return first.Encapsulate(rest)
 }
 
-func getConnectionAddresses(pc *webrtc.PeerConnection) (ma.Multiaddr, ma.Multiaddr, error) {
+// getConnectionAddresses provides multiaddresses on the two sides of the connection pc
+func getConnectionAddresses(pc *webrtc.PeerConnection) (local ma.Multiaddr, remote ma.Multiaddr, err error) {
 	if pc.SCTP() == nil {
 		return nil, nil, errors.New("no sctp transport")
 	}
