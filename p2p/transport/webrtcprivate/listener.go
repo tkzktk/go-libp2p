@@ -148,11 +148,11 @@ func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope 
 
 	// register local ICE Candidate found callback
 	writeErr := make(chan error, 1)
-	pc.OnICECandidate(func(candiate *webrtc.ICECandidate) {
-		if candiate == nil {
+	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
+		if candidate == nil {
 			return
 		}
-		b, err := json.Marshal(candiate.ToJSON())
+		b, err := json.Marshal(candidate.ToJSON())
 		if err != nil {
 			// We only want to write a single error on this channel
 			select {
@@ -193,10 +193,7 @@ func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope 
 		err = errors.New("invalid message: empty data")
 		return nil, err
 	}
-	offer := webrtc.SessionDescription{
-		Type: webrtc.SDPTypeOffer,
-		SDP:  *msg.Data,
-	}
+	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: *msg.Data}
 	if err := pc.SetRemoteDescription(offer); err != nil {
 		err = fmt.Errorf("failed to set remote description: %w", err)
 		return nil, err
@@ -207,15 +204,13 @@ func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create answer: %w", err)
 	}
-
-	answerMessage := &pb.Message{
+	msg = pb.Message{
 		Type: pb.Message_SDP_ANSWER.Enum(),
 		Data: &answer.SDP,
 	}
-	if err := w.WriteMsg(answerMessage); err != nil {
+	if err := w.WriteMsg(&msg); err != nil {
 		return nil, fmt.Errorf("failed to write answer: %w", err)
 	}
-
 	if err := pc.SetLocalDescription(answer); err != nil {
 		return nil, fmt.Errorf("failed to set local description: %w", err)
 	}
@@ -227,9 +222,9 @@ func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope 
 			if ctx.Err() != nil {
 				return
 			}
-
 			err := r.ReadMsg(&msg)
 			if err == io.EOF {
+				// remote has done writing
 				return
 			}
 			if err != nil {
