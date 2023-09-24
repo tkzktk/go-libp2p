@@ -77,14 +77,27 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 	defer cancel()
 	defer s.Close()
 
-	s.SetDeadline(time.Now().Add(connectTimeout))
-
 	scope, err := l.transport.rcmgr.OpenConnection(network.DirInbound, false, ma.StringCast("/webrtc")) // we don't have a better remote adress right now
 	if err != nil {
 		s.Reset()
 		log.Debug("failed to create connection scope:", err)
 		return
 	}
+
+	if err := s.Scope().SetService(name); err != nil {
+		log.Debugf("error attaching stream to /webrtc listener: %s", err)
+		s.Reset()
+		return
+	}
+
+	if err := s.Scope().ReserveMemory(2*maxMsgSize, network.ReservationPriorityAlways); err != nil {
+		log.Debugf("error reserving memory for /webrtc signaling stream: %s", err)
+		s.Reset()
+		return
+	}
+	defer s.Scope().ReleaseMemory(maxMsgSize)
+
+	s.SetDeadline(time.Now().Add(connectTimeout))
 
 	conn, err := l.setupConnection(ctx, s, scope)
 	if err != nil {
