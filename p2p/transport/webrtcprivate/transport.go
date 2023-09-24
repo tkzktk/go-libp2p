@@ -214,12 +214,12 @@ func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope
 
 	// register local ICE Candidate found callback
 	writeErr := make(chan error, 1)
-	pc.OnICECandidate(func(candiate *webrtc.ICECandidate) {
+	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 		// The callback can be called with a nil pointer
-		if candiate == nil {
+		if candidate == nil {
 			return
 		}
-		b, err := json.Marshal(candiate.ToJSON())
+		b, err := json.Marshal(candidate.ToJSON())
 		if err != nil {
 			// We only want to write a single error on this channel
 			select {
@@ -264,12 +264,12 @@ func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope
 	if err != nil {
 		return nil, fmt.Errorf("failed to create offer: %w", err)
 	}
-	offerMessage := &pb.Message{
+	msg := pb.Message{
 		Type: pb.Message_SDP_OFFER.Enum(),
 		Data: &offer.SDP,
 	}
 	// send offer to peer
-	if err := w.WriteMsg(offerMessage); err != nil {
+	if err := w.WriteMsg(&msg); err != nil {
 		return nil, fmt.Errorf("failed to write to stream: %w", err)
 	}
 	if err := pc.SetLocalDescription(offer); err != nil {
@@ -277,7 +277,6 @@ func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope
 	}
 
 	// read an incoming answer
-	var msg pb.Message
 	if err := r.ReadMsg(&msg); err != nil {
 		return nil, fmt.Errorf("failed to read from stream: %w", err)
 	}
