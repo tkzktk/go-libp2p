@@ -49,24 +49,22 @@ func (l *listener) Accept() (tpt.CapableConn, error) {
 	}
 }
 
-// Addr implements transport.Listener.
+// Addr implements transport.Listener. The returned address always returns libp2p-webrtc:/webrtc
 func (l *listener) Addr() net.Addr {
 	return NetAddr{}
 }
 
-// Close implements transport.Listener.
 func (l *listener) Close() error {
 	l.transport.RemoveListener(l)
 	close(l.closeC)
 	return nil
 }
 
-// Multiaddr implements transport.Listener.
 func (*listener) Multiaddr() ma.Multiaddr {
 	return ma.StringCast("/webrtc")
 }
 
-func (l *listener) handleIncoming(s network.Stream) {
+func (l *listener) handleSignalingStream(s network.Stream) {
 	select {
 	case l.inflightQueue <- struct{}{}:
 		defer func() { <-l.inflightQueue }()
