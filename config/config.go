@@ -34,6 +34,7 @@ import (
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	"github.com/libp2p/go-libp2p/p2p/transport/quicreuse"
+	libp2pwebrtcprivate "github.com/libp2p/go-libp2p/p2p/transport/webrtcprivate"
 	"github.com/prometheus/client_golang/prometheus"
 
 	ma "github.com/multiformats/go-multiaddr"
@@ -128,6 +129,9 @@ type Config struct {
 	DialRanker network.DialRanker
 
 	SwarmOpts []swarm.Option
+
+	WebRTCPrivate     bool
+	WebRTCStunServers []string
 }
 
 func (cfg *Config) makeSwarm(eventBus event.Bus, enableMetrics bool) (*swarm.Swarm, error) {
@@ -208,6 +212,7 @@ func (cfg *Config) addTransports(h host.Host) error {
 		fx.Provide(func() pnet.PSK { return cfg.PSK }),
 		fx.Provide(func() network.ResourceManager { return cfg.ResourceManager }),
 		fx.Provide(func() *madns.Resolver { return cfg.MultiaddrResolver }),
+		fx.Provide(func() []string { return cfg.WebRTCStunServers }),
 	}
 	fxopts = append(fxopts, cfg.Transports...)
 	if cfg.Insecure {
@@ -282,6 +287,9 @@ func (cfg *Config) addTransports(h host.Host) error {
 	)
 	if cfg.Relay {
 		fxopts = append(fxopts, fx.Invoke(circuitv2.AddTransport))
+	}
+	if cfg.WebRTCPrivate {
+		fxopts = append(fxopts, fx.Invoke(libp2pwebrtcprivate.AddTransport))
 	}
 	app := fx.New(fxopts...)
 	if err := app.Err(); err != nil {

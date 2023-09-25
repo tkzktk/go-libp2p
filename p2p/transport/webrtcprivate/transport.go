@@ -60,13 +60,13 @@ type transport struct {
 
 var _ tpt.Transport = &transport{}
 
-func AddTransport(h host.Host, gater connmgr.ConnectionGater) (*transport, error) {
+func AddTransport(h host.Host, gater connmgr.ConnectionGater, stunServers []string) (*transport, error) {
 	n, ok := h.Network().(tpt.TransportNetwork)
 	if !ok {
 		return nil, fmt.Errorf("%v is not a transport network", h.Network())
 	}
 
-	t, err := newTransport(h, gater)
+	t, err := newTransport(h, gater, stunServers)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func AddTransport(h host.Host, gater connmgr.ConnectionGater) (*transport, error
 	return t, nil
 }
 
-func newTransport(h host.Host, gater connmgr.ConnectionGater) (*transport, error) {
+func newTransport(h host.Host, gater connmgr.ConnectionGater, stunServers []string) (*transport, error) {
 	// We use elliptic P-256 since it is widely supported by browsers.
 	//
 	// Implementation note: Testing with the browser,
@@ -102,8 +102,13 @@ func newTransport(h host.Host, gater connmgr.ConnectionGater) (*transport, error
 	if err != nil {
 		return nil, fmt.Errorf("generate certificate: %w", err)
 	}
+	servers := make([]webrtc.ICEServer, len(stunServers))
+	for i := 0; i < len(stunServers); i++ {
+		servers[i] = webrtc.ICEServer{URLs: []string{stunServers[i]}}
+	}
 	config := webrtc.Configuration{
 		Certificates: []webrtc.Certificate{*cert},
+		ICEServers:   servers,
 	}
 
 	return &transport{
