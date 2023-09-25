@@ -60,13 +60,13 @@ type transport struct {
 
 var _ tpt.Transport = &transport{}
 
-func AddTransport(h host.Host) (*transport, error) {
+func AddTransport(h host.Host, gater connmgr.ConnectionGater) (*transport, error) {
 	n, ok := h.Network().(tpt.TransportNetwork)
 	if !ok {
 		return nil, fmt.Errorf("%v is not a transport network", h.Network())
 	}
 
-	t, err := newTransport(h)
+	t, err := newTransport(h, gater)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func AddTransport(h host.Host) (*transport, error) {
 	return t, nil
 }
 
-func newTransport(h host.Host) (*transport, error) {
+func newTransport(h host.Host, gater connmgr.ConnectionGater) (*transport, error) {
 	// We use elliptic P-256 since it is widely supported by browsers.
 	//
 	// Implementation note: Testing with the browser,
@@ -111,6 +111,7 @@ func newTransport(h host.Host) (*transport, error) {
 		rcmgr:                  h.Network().ResourceManager(),
 		webrtcConfig:           config,
 		maxInFlightConnections: 16,
+		gater:                  gater,
 	}, nil
 }
 
@@ -136,6 +137,11 @@ func (t *transport) CanDial(addr ma.Multiaddr) bool {
 func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tpt.CapableConn, error) {
 	// Connect to the peer on the circuit address
 	relayAddr := getRelayAddr(raddr)
+	// We drop the ForceDirectDial option as we need a relayed connection before we can
+	// setup a direct connection
+	ctx = network.WithoutForceDirectDial(ctx)
+	// We need this for the signaling stream
+	ctx = network.WithUseTransient(ctx, "webrtcprivate dial")
 	err := t.host.Connect(ctx, peer.AddrInfo{ID: p, Addrs: []ma.Multiaddr{relayAddr}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s stream: %w", SignalingProtocol, err)
@@ -160,8 +166,6 @@ func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tp
 }
 
 func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.ConnManagementScope) (tpt.CapableConn, error) {
-	// Start signaling protocol stream
-	ctx = network.WithUseTransient(ctx, "webrtcprivate dial")
 	s, err := t.host.NewStream(ctx, p, SignalingProtocol)
 	if err != nil {
 		return nil, fmt.Errorf("error opening stream %s: %w", SignalingProtocol, err)
