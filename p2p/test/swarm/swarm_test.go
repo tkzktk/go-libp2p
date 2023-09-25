@@ -10,7 +10,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
-	libp2pwebrtcprivate "github.com/libp2p/go-libp2p/p2p/transport/webrtcprivate"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,12 +74,14 @@ func TestDialPeerWebRTC(t *testing.T) {
 	h1, err := libp2p.New(
 		libp2p.NoListenAddrs,
 		libp2p.EnableRelay(),
+		libp2p.EnableWebRTCPrivate(nil),
 	)
 	require.NoError(t, err)
 
 	h2, err := libp2p.New(
 		libp2p.NoListenAddrs,
 		libp2p.EnableRelay(),
+		libp2p.EnableWebRTCPrivate(nil),
 	)
 	require.NoError(t, err)
 
@@ -99,11 +100,6 @@ func TestDialPeerWebRTC(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.Reserve(context.Background(), h2, relay1info)
-	require.NoError(t, err)
-
-	_, err = libp2pwebrtcprivate.AddTransport(h1, nil)
-	require.NoError(t, err)
-	_, err = libp2pwebrtcprivate.AddTransport(h2, nil)
 	require.NoError(t, err)
 
 	webrtcAddr := ma.StringCast(relay1info.Addrs[0].String() + "/p2p/" + relay1info.ID.String() + "/p2p-circuit/webrtc/p2p/" + h2.ID().String())
