@@ -47,7 +47,7 @@ func newWebRTCHost(t *testing.T) *webrtcHost {
 	upg := swarmt.GenUpgrader(t, as, nil)
 	err := client.AddTransport(a, upg)
 	require.NoError(t, err)
-	ta, err := newTransport(a)
+	ta, err := newTransport(a, nil)
 	require.NoError(t, err)
 	return &webrtcHost{
 		Host: a,
@@ -68,7 +68,7 @@ func newRelayedHost(t *testing.T) *relayedHost {
 	client.AddTransport(p, upg)
 	_, err = client.Reserve(context.Background(), p, peer.AddrInfo{ID: rh.ID(), Addrs: rh.Addrs()})
 	require.NoError(t, err)
-	tp, err := newTransport(p)
+	tp, err := newTransport(p, nil)
 	require.NoError(t, err)
 	return &relayedHost{
 		webrtcHost: webrtcHost{
