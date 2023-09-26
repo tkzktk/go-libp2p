@@ -9,6 +9,11 @@ import (
 	pool "github.com/libp2p/go-buffer-pool"
 )
 
+type packet struct {
+	buf  []byte
+	addr net.Addr
+}
+
 var _ net.PacketConn = &muxedConnection{}
 
 const queueLen = 128
@@ -21,48 +26,46 @@ type muxedConnection struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	onClose func()
-	queue   chan []byte
-	remote  net.Addr
+	queue   chan packet
 	mux     *UDPMux
 }
 
 var _ net.PacketConn = &muxedConnection{}
 
-func newMuxedConnection(mux *UDPMux, onClose func(), remote net.Addr) *muxedConnection {
+func newMuxedConnection(mux *UDPMux, onClose func()) *muxedConnection {
 	ctx, cancel := context.WithCancel(mux.ctx)
 	return &muxedConnection{
 		ctx:     ctx,
 		cancel:  cancel,
-		queue:   make(chan []byte, queueLen),
+		queue:   make(chan packet, queueLen),
 		onClose: onClose,
-		remote:  remote,
 		mux:     mux,
 	}
 }
 
-func (c *muxedConnection) Push(buf []byte) error {
+func (c *muxedConnection) Push(buf []byte, addr net.Addr) error {
 	select {
 	case <-c.ctx.Done():
 		return errors.New("closed")
 	default:
 	}
 	select {
-	case c.queue <- buf:
+	case c.queue <- packet{buf: buf, addr: addr}:
 		return nil
 	default:
 		return errors.New("queue full")
 	}
 }
 
-func (c *muxedConnection) ReadFrom(p []byte) (int, net.Addr, error) {
+func (c *muxedConnection) ReadFrom(buf []byte) (int, net.Addr, error) {
 	select {
-	case buf := <-c.queue:
-		n := copy(p, buf) // This might discard parts of the packet, if p is too short
-		if n < len(buf) {
-			log.Debugf("short read, had %d, read %d", len(buf), n)
+	case p := <-c.queue:
+		n := copy(buf, p.buf) // This might discard parts of the packet, if p is too short
+		if n < len(p.buf) {
+			log.Debugf("short read, had %d, read %d", len(p.buf), n)
 		}
-		pool.Put(buf)
-		return n, c.remote, nil
+		pool.Put(p.buf)
+		return n, p.addr, nil
 	case <-c.ctx.Done():
 		return 0, nil, c.ctx.Err()
 	}
@@ -83,15 +86,15 @@ func (c *muxedConnection) Close() error {
 	// drain the packet queue
 	for {
 		select {
-		case <-c.queue:
+		case p := <-c.queue:
+			pool.Put(p.buf)
 		default:
 			return nil
 		}
 	}
 }
 
-func (c *muxedConnection) LocalAddr() net.Addr  { return c.mux.socket.LocalAddr() }
-func (c *muxedConnection) RemoteAddr() net.Addr { return c.remote }
+func (c *muxedConnection) LocalAddr() net.Addr { return c.mux.socket.LocalAddr() }
 
 func (*muxedConnection) SetDeadline(t time.Time) error {
 	// no deadline is desired here
