@@ -35,6 +35,7 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	"github.com/libp2p/go-libp2p/p2p/transport/quicreuse"
 	libp2pwebrtcprivate "github.com/libp2p/go-libp2p/p2p/transport/webrtcprivate"
+	"github.com/pion/webrtc/v3"
 	"github.com/prometheus/client_golang/prometheus"
 
 	ma "github.com/multiformats/go-multiaddr"
@@ -65,6 +66,8 @@ type Security struct {
 	ID          protocol.ID
 	Constructor interface{}
 }
+
+type ICEServer = webrtc.ICEServer
 
 // Config describes a set of settings for a libp2p node
 //
@@ -131,7 +134,7 @@ type Config struct {
 	SwarmOpts []swarm.Option
 
 	WebRTCPrivate     bool
-	WebRTCStunServers []string
+	WebRTCStunServers []ICEServer
 }
 
 func (cfg *Config) makeSwarm(eventBus event.Bus, enableMetrics bool) (*swarm.Swarm, error) {
@@ -212,7 +215,7 @@ func (cfg *Config) addTransports(h host.Host) error {
 		fx.Provide(func() pnet.PSK { return cfg.PSK }),
 		fx.Provide(func() network.ResourceManager { return cfg.ResourceManager }),
 		fx.Provide(func() *madns.Resolver { return cfg.MultiaddrResolver }),
-		fx.Provide(func() []string { return cfg.WebRTCStunServers }),
+		fx.Provide(func() []ICEServer { return cfg.WebRTCStunServers }),
 	}
 	fxopts = append(fxopts, cfg.Transports...)
 	if cfg.Insecure {
