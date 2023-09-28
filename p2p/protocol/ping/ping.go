@@ -71,6 +71,7 @@ func (p *PingService) PingHandler(s network.Stream) {
 				log.Error("ping loop failed without error")
 			}
 		}
+		log.Error("closing stream")
 		s.Close()
 	}()
 
@@ -86,7 +87,7 @@ func (p *PingService) PingHandler(s network.Stream) {
 			errCh <- err
 			return
 		}
-
+		log.Error("wrote data to peer")
 		timer.Reset(pingTimeout)
 	}
 }

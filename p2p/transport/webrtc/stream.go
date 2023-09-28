@@ -192,6 +192,7 @@ func (s *stream) maybeDeclareStreamDone() {
 		(s.receiveState == receiveStateReset || s.receiveState == receiveStateDataRead) &&
 		len(s.controlMsgQueue) == 0 {
 		_ = s.SetReadDeadline(time.Now().Add(-1 * time.Hour)) // pion ignores zero times
+		log.Error("closing data channel")
 		_ = s.dataChannel.Close()
 		// TODO: write for the spawned reader to return
 		s.onDone()
