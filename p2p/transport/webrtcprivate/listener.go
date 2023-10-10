@@ -120,7 +120,7 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 		return
 	}
 
-	if l.transport.gater != nil && l.transport.gater.InterceptSecured(network.DirInbound, s.Conn().RemotePeer(), conn) {
+	if l.transport.gater != nil && !l.transport.gater.InterceptSecured(network.DirInbound, s.Conn().RemotePeer(), conn) {
 		conn.Close()
 		log.Debugf("conn gater refused connection to addr: %s", conn.RemoteMultiaddr())
 	}
