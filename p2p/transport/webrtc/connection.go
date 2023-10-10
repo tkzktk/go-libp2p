@@ -25,7 +25,8 @@ import (
 
 var _ tpt.CapableConn = &connection{}
 
-const maxAcceptQueueLen = 10
+// maxAcceptQueueLen is the number of waiting streams.
+const maxAcceptQueueLen = 256
 
 const maxDataChannelID = 1 << 10
 
