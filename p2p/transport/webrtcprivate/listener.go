@@ -81,10 +81,14 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 	defer cancel()
 	defer s.Close()
 
-	scope, err := l.transport.rcmgr.OpenConnection(network.DirInbound, false, ma.StringCast("/webrtc")) // we don't have a better remote adress right now
+	scope, err := l.transport.rcmgr.OpenConnection(network.DirInbound, true, ma.StringCast("/webrtc")) // we don't have a better remote adress right now
 	if err != nil {
 		s.Reset()
 		log.Debug("failed to create connection scope:", err)
+		return
+	}
+	if err := scope.SetPeer(s.Conn().RemotePeer()); err != nil {
+		log.Debugf("resource manager blocked incoming conn from peer %s: %s", s.Conn().RemotePeer(), err)
 		return
 	}
 
