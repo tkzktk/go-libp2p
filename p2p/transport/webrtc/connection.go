@@ -141,10 +141,15 @@ func (c *connection) Close() error {
 
 	c.m.Lock()
 	defer c.m.Unlock()
-	c.scope.Done()
-	c.closeErr = errors.New("connection closed")
 	c.cancel()
-	return c.pc.Close()
+	c.closeErr = errors.New("connection closed")
+	for k, str := range c.streams {
+		str.setCloseError(c.closeErr)
+		delete(c.streams, k)
+	}
+	c.scope.Done()
+	c.pc.Close()
+	return nil
 }
 
 func (c *connection) IsClosed() bool {
@@ -229,20 +234,7 @@ func (c *connection) removeStream(id uint16) {
 
 func (c *connection) onConnectionStateChange(state webrtc.PeerConnectionState) {
 	if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
-		// reset any streams
-		if c.IsClosed() {
-			return
-		}
-		c.m.Lock()
-		defer c.m.Unlock()
-		c.closeErr = errConnectionTimeout{}
-		for k, str := range c.streams {
-			str.setCloseError(c.closeErr)
-			delete(c.streams, k)
-		}
-		c.cancel()
-		c.scope.Done()
-		c.pc.Close()
+		c.Close()
 	}
 }
 

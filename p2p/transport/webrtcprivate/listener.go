@@ -88,19 +88,20 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 		return
 	}
 	if err := scope.SetPeer(s.Conn().RemotePeer()); err != nil {
+		s.Reset()
 		log.Debugf("resource manager blocked incoming conn from peer %s: %s", s.Conn().RemotePeer(), err)
 		return
 	}
 
 	if err := s.Scope().SetService(name); err != nil {
-		log.Debugf("error attaching stream to /webrtc listener: %s", err)
 		s.Reset()
+		log.Debugf("error attaching stream to /webrtc listener: %s", err)
 		return
 	}
 
 	if err := s.Scope().ReserveMemory(2*maxMsgSize, network.ReservationPriorityAlways); err != nil {
-		log.Debugf("error reserving memory for /webrtc signaling stream: %s", err)
 		s.Reset()
+		log.Debugf("error reserving memory for /webrtc signaling stream: %s", err)
 		return
 	}
 	defer s.Scope().ReleaseMemory(maxMsgSize)
@@ -125,8 +126,10 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 	}
 
 	if l.transport.gater != nil && !l.transport.gater.InterceptSecured(network.DirInbound, s.Conn().RemotePeer(), conn) {
+		s.Reset()
 		conn.Close()
 		log.Debugf("conn gater refused connection to addr: %s", conn.RemoteMultiaddr())
+		return
 	}
 	// Close the stream before we wait for the connection to be accepted
 	s.Close()

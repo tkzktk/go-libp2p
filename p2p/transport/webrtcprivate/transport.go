@@ -39,7 +39,7 @@ const (
 	disconnectedTimeout = 20 * time.Second
 	failedTimeout       = 30 * time.Second
 	keepaliveTimeout    = 15 * time.Second
-	maxAcceptQueueLen   = 10
+	maxAcceptQueueLen   = 256
 )
 
 var (
