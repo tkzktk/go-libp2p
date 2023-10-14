@@ -712,7 +712,7 @@ func TestDiscoverPeerIDFromSecurityNegotiation(t *testing.T) {
 	for _, tc := range transportsToTest {
 		t.Run(tc.Name, func(t *testing.T) {
 			if strings.Contains(tc.Name, "WebRTCPrivate") {
-				t.Skip("webrtcprivate needs different handling because of the relay required for connection setup")
+				t.Skip("inapplicable for webrtc private to private since the connection is established over an authenticated channel")
 			}
 
 			h1 := tc.HostGenerator(t, TransportTestCaseOpts{})

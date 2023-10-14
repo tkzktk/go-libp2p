@@ -157,7 +157,7 @@ func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tp
 		return nil, err
 	}
 
-	c, err := t.dialWithScope(ctx, p, scope)
+	c, err := t.dialWithScope(ctx, p, scope, raddr)
 	if err != nil {
 		scope.Done()
 		log.Debug(err)
@@ -166,7 +166,7 @@ func (t *transport) Dial(ctx context.Context, raddr ma.Multiaddr, p peer.ID) (tp
 	return c, nil
 }
 
-func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.ConnManagementScope) (tpt.CapableConn, error) {
+func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.ConnManagementScope, raddr ma.Multiaddr) (tpt.CapableConn, error) {
 	s, err := t.host.NewStream(ctx, p, SignalingProtocol)
 	if err != nil {
 		return nil, fmt.Errorf("error opening stream %s: %w", SignalingProtocol, err)
@@ -190,7 +190,7 @@ func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.
 	}
 	s.SetDeadline(deadline)
 
-	conn, err := t.setupConnection(ctx, s, scope)
+	conn, err := t.setupConnection(ctx, s, scope, raddr)
 	if err != nil {
 		s.Reset()
 		return nil, fmt.Errorf("error establishing webrtc.PeerConnection: %w", err)
@@ -204,11 +204,17 @@ func (t *transport) dialWithScope(ctx context.Context, p peer.ID, scope network.
 	return conn, nil
 }
 
-func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope network.ConnManagementScope) (tpt.CapableConn, error) {
+func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope network.ConnManagementScope, raddr ma.Multiaddr) (_ tpt.CapableConn, err error) {
 	r := pbio.NewDelimitedReader(s, maxMsgSize)
 	w := pbio.NewDelimitedWriter(s)
 
-	pc, err := t.NewPeerConnection()
+	var pc *webrtc.PeerConnection
+	defer func() {
+		if err != nil {
+			pc.Close()
+		}
+	}()
+	pc, err = t.NewPeerConnection()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create webrtc.PeerConnection: %w", err)
 	}
@@ -370,7 +376,7 @@ func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope
 		case webrtc.PeerConnectionStateConnected:
 		}
 	}
-	localAddr, remoteAddr, err := getConnectionAddresses(pc)
+	localAddr, err := getLocalConnectionAddress(pc)
 	if err != nil {
 		pc.Close()
 		return nil, fmt.Errorf("failed to get connection addresses: %w", err)
@@ -385,7 +391,7 @@ func (t *transport) setupConnection(ctx context.Context, s network.Stream, scope
 		localAddr,
 		s.Conn().RemotePeer(),
 		t.host.Network().Peerstore().PubKey(s.Conn().RemotePeer()), // we have the pubkey from the relayed connection
-		remoteAddr,
+		raddr,
 		dataChannelQueue,
 	)
 	if err != nil {
@@ -469,33 +475,27 @@ func getRelayAddr(addr ma.Multiaddr) ma.Multiaddr {
 	return first.Encapsulate(rest)
 }
 
-// getConnectionAddresses provides multiaddresses on the two sides of the connection pc
-func getConnectionAddresses(pc *webrtc.PeerConnection) (local ma.Multiaddr, remote ma.Multiaddr, err error) {
+// getLocalConnectionAddress returns the local connection multiaddr
+func getLocalConnectionAddress(pc *webrtc.PeerConnection) (local ma.Multiaddr, err error) {
 	if pc.SCTP() == nil {
-		return nil, nil, errors.New("no sctp transport")
+		return nil, errors.New("no sctp transport")
 	}
 	if pc.SCTP().Transport() == nil {
-		return nil, nil, errors.New("no dtls transport")
+		return nil, errors.New("no dtls transport")
 	}
 	if pc.SCTP().Transport().ICETransport() == nil {
-		return nil, nil, errors.New("no ice transport")
+		return nil, errors.New("no ice transport")
 	}
 	cp, err := pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair()
 	if cp == nil || err != nil {
-		return nil, nil, fmt.Errorf("invalid candidate pair %s: %w", cp, err)
+		return nil, fmt.Errorf("invalid candidate pair %s: %w", cp, err)
 	}
 
 	localAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Local.Address), Port: int(cp.Local.Port)})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to infer local address from candidate %s: %w", cp, err)
+		return nil, fmt.Errorf("failed to infer local address from candidate %s: %w", cp, err)
 	}
 	localAddr = localAddr.Encapsulate(WebRTCAddr)
 
-	remoteAddr, err := manet.FromNetAddr(&net.UDPAddr{IP: net.ParseIP(cp.Remote.Address), Port: int(cp.Remote.Port)})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to infer remote address from candidate %s: %w", cp, err)
-	}
-	remoteAddr = remoteAddr.Encapsulate(WebRTCAddr)
-
-	return localAddr, remoteAddr, nil
+	return localAddr, nil
 }

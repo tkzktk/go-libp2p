@@ -118,9 +118,16 @@ func TestInterceptSecuredOutgoing(t *testing.T) {
 					connGater.EXPECT().InterceptUpgraded(gomock.Any()).AnyTimes().Return(true, control.DisconnectReason(0)),
 
 					// webrtcprivate setup complete
-					// TODO: fix addresses on both sides of the /webrtc connection
-					connGater.EXPECT().InterceptSecured(network.DirOutbound, h2.ID(), gomock.Any()),
+					connGater.EXPECT().InterceptSecured(network.DirOutbound, h2.ID(), gomock.Any()).Do(func(_, _ any, c network.ConnMultiaddrs) {
+						require.Equal(t, h2.Addrs()[0], c.RemoteMultiaddr())
+					}),
 				)
+				// As we are using trickle ICE, some candidates are handled
+				// as prflx candidates. The default wait time for prflx
+				// candidates is 1 second. Bump the timeout to handle those
+				// cases.
+				ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
 				// force a direct connection
 				ctx = network.WithForceDirectDial(ctx, "integration test /webrtc")
 			} else {
@@ -181,13 +188,19 @@ func TestInterceptUpgradedOutgoing(t *testing.T) {
 					connGater.EXPECT().InterceptUpgraded(gomock.Any()).Return(true, control.DisconnectReason(0)),
 
 					// webrtcprivate setup complete
-					// TODO: fix addresses on both sides of the /webrtc connection
 					connGater.EXPECT().InterceptSecured(network.DirOutbound, h2.ID(), gomock.Any()).Return(true),
 					connGater.EXPECT().InterceptUpgraded(gomock.Any()).Do(func(c network.Conn) {
 						require.Equal(t, h1.ID(), c.LocalPeer())
 						require.Equal(t, h2.ID(), c.RemotePeer())
+						require.Equal(t, h2.Addrs()[0], c.RemoteMultiaddr())
 					}),
 				)
+				// As we are using trickle ICE, some candidates are handled
+				// as prflx candidates. The default wait time for prflx
+				// candidates is 1 second. Bump the timeout to handle those
+				// cases.
+				ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
 				// force a direct connection
 				ctx = network.WithForceDirectDial(ctx, "integration test /webrtc")
 			} else {
@@ -275,25 +288,25 @@ func testInterceptAcceptIncomingWebRTCPrivate(t *testing.T, tc TransportTestCase
 	defer h2.Close()
 	require.Len(t, h2.Addrs(), 1)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	// relayed connection for incoming stream
 	connGater.EXPECT().InterceptAccept(gomock.Any()).Return(true)
 	connGater.EXPECT().InterceptSecured(gomock.Any(), gomock.Any(), gomock.Any()).Return(true)
 	connGater.EXPECT().InterceptUpgraded(gomock.Any()).Return(true, control.DisconnectReason(0))
 	// webrtc connection accept
-	// TODO: Fix webrtc addresses on both sides.
-	connGater.EXPECT().InterceptAccept(gomock.Any())
+	connGater.EXPECT().InterceptAccept(gomock.Any()).Do(func(c network.ConnMultiaddrs) {
+		// On an incoming webrtc connection, the remote address will be the same as the listen address.
+		// This is simlar to how addresses are setup on circuit-v2 connections
+		require.Equal(t, h2.Addrs()[0], c.RemoteMultiaddr(), h2.Addrs(), c.RemoteMultiaddr())
+	})
 
 	// The basic host dials the first connection.
 	h1.Peerstore().AddAddrs(h2.ID(), h2.Addrs(), time.Hour)
 	_, err := h1.NewStream(ctx, h2.ID(), protocol.TestingID)
 	require.Error(t, err)
-	if _, err := h2.Addrs()[0].ValueForProtocol(ma.P_WEBRTC_DIRECT); err != nil {
-		// WebRTC rejects connection attempt before an error can be sent to the client.
-		// This means that the connection attempt will time out.
-		require.NotErrorIs(t, err, context.DeadlineExceeded)
-	}
+	// Do not check that error is Context Deadline Exceeded
+	// See details at the end of `testInterceptSecuredIncomingWebRTCPrivate`
 }
 
 func TestInterceptSecuredIncoming(t *testing.T) {
@@ -358,12 +371,14 @@ func testInterceptSecuredIncomingWebRTCPrivate(t *testing.T, tc TransportTestCas
 
 	require.Len(t, h2.Addrs(), 1)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	ctx = network.WithForceDirectDial(ctx, "transport integration test /webrtc")
 	gomock.InOrder(
 		connGater.EXPECT().InterceptAccept(gomock.Any()).Return(true),
-		connGater.EXPECT().InterceptSecured(network.DirInbound, h1.ID(), gomock.Any()),
+		connGater.EXPECT().InterceptSecured(network.DirInbound, h1.ID(), gomock.Any()).Do(func(_, _ any, c network.ConnMultiaddrs) {
+			require.Equal(t, h2.Addrs()[0], c.RemoteMultiaddr())
+		}),
 	)
 
 	h1.Peerstore().AddAddrs(h2.ID(), h2.Addrs(), time.Hour)
@@ -447,16 +462,19 @@ func testInterceptUpgradeIncomingWebRTCPrivate(t *testing.T, tc TransportTestCas
 		connGater.EXPECT().InterceptAccept(gomock.Any()).Return(true),
 		connGater.EXPECT().InterceptSecured(network.DirInbound, h1.ID(), gomock.Any()).Return(true),
 		connGater.EXPECT().InterceptUpgraded(gomock.Any()).Do(func(c network.Conn) {
+			require.Equal(t, h2.Addrs()[0], c.RemoteMultiaddr())
 			require.Equal(t, h1.ID(), c.RemotePeer())
 			require.Equal(t, h2.ID(), c.LocalPeer())
 		}),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	ctx = network.WithForceDirectDial(ctx, "transport integration test /webrtc")
 
 	h1.Peerstore().AddAddrs(h2.ID(), h2.Addrs(), time.Hour)
 	_, err := h1.NewStream(ctx, h2.ID(), protocol.TestingID)
 	require.Error(t, err)
+	// Do not check that error is Context Deadline Exceeded
+	// See details at the end of `testInterceptSecuredIncomingWebRTCPrivate`
 }

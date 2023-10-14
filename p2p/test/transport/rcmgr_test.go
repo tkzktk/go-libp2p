@@ -208,8 +208,6 @@ func testResourceManagerIsUsedWebRTCPrivateDialer(t *testing.T, tc TransportTest
 		return connScope
 	}
 
-	// TODO: Fix addresses on rcmgr calls
-
 	var calledSetPeer atomic.Bool
 	// connScope is the scope to be used for the final connection over /webrtc to the peer
 	connScope := mocknetwork.NewMockConnManagementScope(ctrl)
@@ -247,7 +245,7 @@ func testResourceManagerIsUsedWebRTCPrivateDialer(t *testing.T, tc TransportTest
 	})
 
 	// Now handle /webrtc connection establishment
-	rcmgr.EXPECT().OpenConnection(network.DirOutbound, true, gomock.Any()).Return(connScope, nil)
+	rcmgr.EXPECT().OpenConnection(network.DirOutbound, true, listener.Addrs()[0]).Return(connScope, nil)
 	rcmgr.EXPECT().OpenStream(listener.ID(), gomock.Any()).AnyTimes().DoAndReturn(func(id peer.ID, dir network.Direction) (network.StreamManagementScope, error) {
 		allStreamsDone.Add(1)
 		streamScope := mocknetwork.NewMockStreamManagementScope(ctrl)
@@ -392,7 +390,8 @@ func testResourceManagerIsUsedWebRTCPrivateListener(t *testing.T, tc TransportTe
 		// Incoming circuit-v2 connection for signaling stream
 		rcmgr.EXPECT().OpenConnection(network.DirInbound, gomock.Any(), gomock.Any()).Return(getRelayConnScope(), nil),
 		// /webrtc connection
-		rcmgr.EXPECT().OpenConnection(network.DirInbound, true, gomock.Any()).Return(connScope, nil),
+		// The remote multiaddr is the same as our
+		rcmgr.EXPECT().OpenConnection(network.DirInbound, true, listener.Addrs()[0]).Return(connScope, nil),
 	)
 	rcmgr.EXPECT().OpenStream(dialer.ID(), gomock.Any()).AnyTimes().DoAndReturn(func(id peer.ID, dir network.Direction) (network.StreamManagementScope, error) {
 		allStreamsDone.Add(1)

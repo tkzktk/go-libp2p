@@ -81,7 +81,8 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 	defer cancel()
 	defer s.Close()
 
-	scope, err := l.transport.rcmgr.OpenConnection(network.DirInbound, true, ma.StringCast("/webrtc")) // we don't have a better remote adress right now
+	remoteAddr := s.Conn().RemoteMultiaddr().Encapsulate(WebRTCAddr)
+	scope, err := l.transport.rcmgr.OpenConnection(network.DirInbound, true, remoteAddr)
 	if err != nil {
 		s.Reset()
 		log.Debug("failed to create connection scope:", err)
@@ -110,7 +111,6 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 
 	if l.transport.gater != nil {
 		localAddr := s.Conn().LocalMultiaddr().Encapsulate(WebRTCAddr)
-		remoteAddr := s.Conn().RemoteMultiaddr().Encapsulate(WebRTCAddr)
 		if !l.transport.gater.InterceptAccept(&libp2pwebrtc.ConnMultiaddrs{Local: localAddr, Remote: remoteAddr}) {
 			log.Debug("gater disallowed accepting connection from %s at %s", s.Conn().RemotePeer(), remoteAddr)
 			s.Reset()
@@ -141,9 +141,15 @@ func (l *listener) handleSignalingStream(s network.Stream) {
 	}
 }
 
-func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope network.ConnManagementScope) (tpt.CapableConn, error) {
+func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope network.ConnManagementScope) (_ tpt.CapableConn, err error) {
+	var pc *webrtc.PeerConnection
+	defer func() {
+		if err != nil {
+			pc.Close()
+		}
+	}()
 
-	pc, err := l.transport.NewPeerConnection()
+	pc, err = l.transport.NewPeerConnection()
 	if err != nil {
 		err = fmt.Errorf("error creating a webrtc.PeerConnection: %w", err)
 		log.Debug(err)
@@ -296,11 +302,12 @@ func (l *listener) setupConnection(ctx context.Context, s network.Stream, scope 
 		}
 	}
 
-	localAddr, remoteAddr, err := getConnectionAddresses(pc)
+	localAddr, err := getLocalConnectionAddress(pc)
 	if err != nil {
 		pc.Close()
 		return nil, fmt.Errorf("failed to get connection addresses: %w", err)
 	}
+	remoteAddr := s.Conn().RemoteMultiaddr().Encapsulate(WebRTCAddr)
 
 	conn, err := libp2pwebrtc.NewWebRTCConnection(
 		network.DirInbound,
